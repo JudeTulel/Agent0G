@@ -89,12 +89,6 @@ export PRIVATE_KEY="your_private_key_here"
 npx hardhat run scripts/deploy.js --network 0g-mainnet
 ```
 
-## Network Configuration
-
-The contracts are configured to work with:
-- **0G Testnet**: Chain ID 9000, RPC: https://evmrpc-testnet.0g.ai
-- **0G Mainnet**: Chain ID 8888, RPC: https://evmrpc.0g.ai
-
 ## Contract Interactions
 
 ### Registering an Agent
