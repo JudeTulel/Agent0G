@@ -159,28 +159,4 @@ await agentRental.useAgent(rentalId);
 - Resource usage tracking
 - Decentralized AI model execution
 
-## Testing
-
-The test suite includes:
-- Unit tests for each contract
-- Integration tests for cross-contract interactions
-- Edge case testing
-- Gas usage optimization tests
-
-Run specific test files:
-```bash
-npx hardhat test test/AgentMarketplace.test.js
-```
-
-## Verification
-
-To verify contracts on 0G Chain explorers:
-```bash
-export VERIFY_CONTRACTS=true
-npm run deploy:testnet
-```
-
-## License
-
-MIT License - see LICENSE file for details.
 
