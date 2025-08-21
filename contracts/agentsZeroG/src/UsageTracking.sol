@@ -324,6 +324,13 @@ contract UsageTracking is Ownable, ReentrancyGuard {
     }
     
     /**
+     * @dev Get total number of usage records
+     */
+    function getTotalUsageRecords() external view returns (uint256) {
+        return _recordIdCounter;
+    }
+    
+    /**
      * @dev Batch verify multiple usage records (for efficiency)
      */
     function batchVerifyUsage(
@@ -346,5 +353,4 @@ contract UsageTracking is Ownable, ReentrancyGuard {
             }
         }
     }
-}
-
+}4

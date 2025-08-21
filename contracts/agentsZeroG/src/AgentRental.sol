@@ -3,7 +3,6 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 import "./AgentRegistry.sol";
 
 /**
@@ -11,9 +10,8 @@ import "./AgentRegistry.sol";
  * @dev Smart contract for handling AI agent rentals and payments
  */
 contract AgentRental is Ownable, ReentrancyGuard {
-    using Counters for Counters.Counter;
     
-    Counters.Counter private _rentalIds;
+    uint256 private _rentalIdCounter;
     
     AgentRegistry public agentRegistry;
     
@@ -105,8 +103,8 @@ contract AgentRental is Ownable, ReentrancyGuard {
         uint256 totalCost = agent.pricePerUse * _maxUsage;
         require(msg.value >= totalCost, "Insufficient payment");
         
-        _rentalIds.increment();
-        uint256 newRentalId = _rentalIds.current();
+        _rentalIdCounter++;
+        uint256 newRentalId = _rentalIdCounter;
         
         rentals[newRentalId] = Rental({
             id: newRentalId,
@@ -158,8 +156,8 @@ contract AgentRental is Ownable, ReentrancyGuard {
         uint256 totalCost = agent.subscriptionPrice;
         require(msg.value >= totalCost, "Insufficient payment");
         
-        _rentalIds.increment();
-        uint256 newRentalId = _rentalIds.current();
+        _rentalIdCounter++;
+        uint256 newRentalId = _rentalIdCounter;
         
         uint256 endTime = block.timestamp + _duration;
         
@@ -360,6 +358,13 @@ contract AgentRental is Ownable, ReentrancyGuard {
     }
     
     /**
+     * @dev Get total number of rentals
+     */
+    function getTotalRentals() external view returns (uint256) {
+        return _rentalIdCounter;
+    }
+    
+    /**
      * @dev Update platform fee (only owner)
      */
     function updatePlatformFee(uint256 _newFee) external onlyOwner {
@@ -375,4 +380,3 @@ contract AgentRental is Ownable, ReentrancyGuard {
         feeRecipient = _newRecipient;
     }
 }
-
