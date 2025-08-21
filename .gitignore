@@ -1,1 +1,6 @@
 contracts/node_modules/
+frontend/node_modules/
+contracts/.env
+frontend/.env
+backend/node_modules
+backend/.env
