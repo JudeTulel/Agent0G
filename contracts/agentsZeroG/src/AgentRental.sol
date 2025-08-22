@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./AgentRegistry.sol";
 
@@ -45,7 +45,7 @@ contract AgentRental is Ownable, ReentrancyGuard {
     mapping(address => uint256[]) public userRentals;
     mapping(uint256 => uint256[]) public agentRentals; // agentId => rentalIds
     
-    // Platform fee (in basis points, e.g., 250 = 2.5%)
+    // Platform fee (in basis points, e.g., 300 = 3%)
     uint256 public platformFee = 250;
     address public feeRecipient;
     
@@ -84,7 +84,7 @@ contract AgentRental is Ownable, ReentrancyGuard {
         _;
     }
     
-    constructor(address _agentRegistry, address _feeRecipient) {
+    constructor(address _agentRegistry, address _feeRecipient) Ownable(msg.sender) {
         agentRegistry = AgentRegistry(_agentRegistry);
         feeRecipient = _feeRecipient;
     }

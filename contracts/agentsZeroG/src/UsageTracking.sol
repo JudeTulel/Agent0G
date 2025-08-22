@@ -2,7 +2,7 @@
 pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./AgentRegistry.sol";
 import "./AgentRental.sol";
 
@@ -84,7 +84,7 @@ contract UsageTracking is Ownable, ReentrancyGuard {
         _;
     }
     
-    constructor(address _agentRegistry, address _agentRental) {
+    constructor(address _agentRegistry, address _agentRental) Ownable(msg.sender) {
         agentRegistry = AgentRegistry(_agentRegistry);
         agentRental = AgentRental(_agentRental);
     }
@@ -353,4 +353,4 @@ contract UsageTracking is Ownable, ReentrancyGuard {
             }
         }
     }
-}4
+}

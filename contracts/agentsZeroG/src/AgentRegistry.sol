@@ -2,17 +2,14 @@
 pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title AgentRegistry
  * @dev Smart contract for registering and managing AI agents on the marketplace
  */
 contract AgentRegistry is Ownable, ReentrancyGuard {
-    using Counters for Counters.Counter;
-    
-    Counters.Counter private _agentIds;
+    uint256 private _agentIds; // replaces Counters.Counter
     
     struct Agent {
         uint256 id;
@@ -82,6 +79,8 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         _;
     }
     
+    constructor() Ownable(msg.sender) {}
+    
     /**
      * @dev Register a new AI agent
      */
@@ -97,8 +96,8 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         require(bytes(_workflowHash).length > 0, "Workflow hash cannot be empty");
         require(_pricePerUse > 0 || _subscriptionPrice > 0, "At least one price must be set");
         
-        _agentIds.increment();
-        uint256 newAgentId = _agentIds.current();
+        _agentIds += 1; // increment manually
+        uint256 newAgentId = _agentIds;
         
         agents[newAgentId] = Agent({
             id: newAgentId,
@@ -132,9 +131,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         return newAgentId;
     }
     
-    /**
-     * @dev Update an existing agent
-     */
     function updateAgent(
         uint256 _agentId,
         string memory _name,
@@ -155,9 +151,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         emit AgentUpdated(_agentId, _name, _description, _pricePerUse, _subscriptionPrice);
     }
     
-    /**
-     * @dev Deactivate an agent
-     */
     function deactivateAgent(uint256 _agentId) 
         external 
         agentExists(_agentId) 
@@ -168,9 +161,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         emit AgentDeactivated(_agentId);
     }
     
-    /**
-     * @dev Activate an agent
-     */
     function activateAgent(uint256 _agentId) 
         external 
         agentExists(_agentId) 
@@ -181,9 +171,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         emit AgentActivated(_agentId);
     }
     
-    /**
-     * @dev Add a review for an agent
-     */
     function addReview(
         uint256 _agentId,
         uint256 _rating,
@@ -213,17 +200,10 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         emit ReviewAdded(_agentId, msg.sender, _rating, _comment);
     }
     
-    /**
-     * @dev Increment usage count for an agent (called by rental contract)
-     */
     function incrementUsage(uint256 _agentId) external agentExists(_agentId) {
-        // This should be called by the rental contract
         agents[_agentId].totalUsage++;
     }
     
-    /**
-     * @dev Get agent details
-     */
     function getAgent(uint256 _agentId) 
         external 
         view 
@@ -233,9 +213,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         return agents[_agentId];
     }
     
-    /**
-     * @dev Get agents by owner
-     */
     function getAgentsByOwner(address _owner) 
         external 
         view 
@@ -244,9 +221,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         return ownerAgents[_owner];
     }
     
-    /**
-     * @dev Get agents by category
-     */
     function getAgentsByCategory(string memory _category) 
         external 
         view 
@@ -255,9 +229,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         return categoryAgents[_category];
     }
     
-    /**
-     * @dev Get reviews for an agent
-     */
     function getAgentReviews(uint256 _agentId) 
         external 
         view 
@@ -267,22 +238,16 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         return agentReviews[_agentId];
     }
     
-    /**
-     * @dev Get total number of agents
-     */
     function getTotalAgents() external view returns (uint256) {
-        return _agentIds.current();
+        return _agentIds;
     }
     
-    /**
-     * @dev Get active agents (paginated)
-     */
     function getActiveAgents(uint256 _offset, uint256 _limit) 
         external 
         view 
         returns (Agent[] memory) 
     {
-        uint256 totalAgents = _agentIds.current();
+        uint256 totalAgents = _agentIds;
         require(_offset < totalAgents, "Offset out of bounds");
         
         uint256 end = _offset + _limit;
@@ -300,7 +265,6 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
             }
         }
         
-        // Resize array to actual size
         Agent[] memory result = new Agent[](index);
         for (uint256 j = 0; j < index; j++) {
             result[j] = activeAgents[j];
@@ -309,4 +273,3 @@ contract AgentRegistry is Ownable, ReentrancyGuard {
         return result;
     }
 }
-
