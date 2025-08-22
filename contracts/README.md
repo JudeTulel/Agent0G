@@ -1,6 +1,30 @@
 # AI Agent Marketplace Smart Contracts
 
-This directory contains the smart contracts for the AI Agent Marketplace built on 0G Chain.
+This directory contains the smart contracts for Agent0G — a platform for agent builders to build and rent agents on the 0G L1.
+
+## Hybrid Architecture (User-Owned Agents)
+
+- **Frontend (Browser / React)**: Users connect a wallet (MetaMask, WalletConnect, TON Connect if on TON), sign agent creation/rental/inference intents, and send signed payloads to the backend.
+- **Backend (Broker Layer using `@0glabs/0g-serving-broker`)**: Verifies signatures and relays user-signed jobs to the 0G Broker. No key custody, no server-paid gas.
+- **0G Network (Broker + Compute Nodes)**: Manages escrow and settles inference costs directly from the user’s wallet; compute nodes execute jobs and return results.
+
+### Benefits
+- **Non-custodial**: We don’t hold funds; users pay directly via wallet.
+- **Browser-friendly**: Node-only SDK runs server-side; UX stays simple.
+- **Clear economics**: Settlement is on-chain; fees are transparent.
+
+## Agent0G: Problem → Solution → Vision
+
+- **The Problem**: AI access is centralized. Cloud incumbents control infra, pricing, and availability—pricing out startups and global innovators.
+- **The Solution**: Agent0G combines 0G Compute, 0G Storage, and OG Chain to enable:
+  - Visual, no-code agent building (n8n-like workflows)
+  - On-chain registry and rental via smart contracts
+  - Decentralized GPU compute for low-cost inference
+  - Private, verifiable, uncensorable data and logic
+- **Vision**: A global, open marketplace where anyone can build, publish, and rent AI agents that run on decentralized compute.
+- **Revenue**: Protocol fee of **3%** on all rental transactions.
+
+---
 
 ## Contracts Overview
 
@@ -51,106 +75,7 @@ Tracks and verifies AI agent usage with 0G Compute integration.
 - `registerComputeProvider()` - Register compute providers
 - `getUsageStats()` - Get usage statistics
 
-## Setup and Installation
-
-1. Install dependencies:
-```bash
-cd contracts
-npm install
-```
-
-2. Compile contracts:
-```bash
-npm run compile
-```
-
-3. Run tests:
-```bash
-npm run test
-```
-
-## Deployment
-
-### Local Development
-```bash
-npx hardhat node
-npm run deploy
-```
-
-### 0G Testnet
-```bash
-export PRIVATE_KEY="your_private_key_here"
-npm run deploy:testnet
-```
-
-### 0G Mainnet
-```bash
-export PRIVATE_KEY="your_private_key_here"
-npx hardhat run scripts/deploy.js --network 0g-mainnet
-```
-
-## Contract Interactions
-
-### Registering an Agent
-```javascript
-const tx = await agentRegistry.registerAgent(
-  "My AI Agent",
-  "Description of the agent",
-  "chatbot",
-  "QmIPFSHash...", // 0G Storage hash
-  ethers.parseEther("0.1"), // Price per use
-  ethers.parseEther("1.0")  // Subscription price
-);
-```
-
-### Renting an Agent
-```javascript
-// Pay-per-use
-const rental = await agentRental.rentAgentPayPerUse(
-  agentId,
-  5, // Max usage count
-  { value: ethers.parseEther("0.5") }
-);
-
-// Subscription
-const subscription = await agentRental.rentAgentSubscription(
-  agentId,
-  30 * 24 * 60 * 60, // 30 days
-  { value: ethers.parseEther("1.0") }
-);
-```
-
-### Using an Agent
-```javascript
-await agentRental.useAgent(rentalId);
-```
-
-## Security Considerations
-
-1. **Reentrancy Protection**: All state-changing functions use OpenZeppelin's ReentrancyGuard
-2. **Access Control**: Proper ownership and permission checks
-3. **Input Validation**: Comprehensive parameter validation
-4. **Escrow System**: Secure fund management with automatic release
-5. **Overflow Protection**: Using Solidity 0.8+ built-in overflow protection
-
-## Gas Optimization
-
-- Efficient storage patterns
-- Batch operations where possible
-- Optimized loops and iterations
-- Minimal external calls
-
-## Integration with 0G Ecosystem
-
-### 0G Storage
-- Agent workflows stored as IPFS hashes on 0G Storage
-- Metadata and large files stored off-chain
-- Immutable storage for agent definitions
-
-### 0G Compute
-- Integration with compute providers
-- Verifiable computation proofs
-- Resource usage tracking
-- Decentralized AI model execution
-
-
+## Deployment Details 
+AgentRegistry deployed at: 0x02D5C205B3E4F550a7c6D1432E3E12c106A25a9a
+AgentRental deployed at: 0xaffd76b978b9F48F3EEbEB20cB1B43C699855Ee3
+UsageTracking deployed at: 0x984E73D5F27859b05118205A9C73A3B5e0816B4B
