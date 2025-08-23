@@ -4,7 +4,7 @@ This directory contains the smart contracts for Agent0G — a platform for agent
 
 ## Hybrid Architecture (User-Owned Agents)
 
-- **Frontend (Browser / React)**: Users connect a wallet (MetaMask, WalletConnect, TON Connect if on TON), sign agent creation/rental/inference intents, and send signed payloads to the backend.
+- **Frontend (Browser / React)**: Users connect a wallet sign agent creation/rental/inference intents, and send signed payloads to the backend.
 - **Backend (Broker Layer using `@0glabs/0g-serving-broker`)**: Verifies signatures and relays user-signed jobs to the 0G Broker. No key custody, no server-paid gas.
 - **0G Network (Broker + Compute Nodes)**: Manages escrow and settles inference costs directly from the user’s wallet; compute nodes execute jobs and return results.
 
