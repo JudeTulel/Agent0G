@@ -1,32 +1,10 @@
 import { createConfig, http } from 'wagmi'
-import { mainnet, sepolia } from 'wagmi/chains'
 import { injected, metaMask, walletConnect } from 'wagmi/connectors'
 
-// 0G Chain configuration
-export const ogChain = {
-  id: 8888,
-  name: '0G Chain',
-  nativeCurrency: {
-    decimals: 18,
-    name: 'Ether',
-    symbol: 'ETH',
-  },
-  rpcUrls: {
-    default: {
-      http: ['https://evmrpc.0g.ai'],
-    },
-  },
-  blockExplorers: {
-    default: {
-      name: '0G Explorer',
-      url: 'https://explorer.0g.ai',
-    },
-  },
-}
-
+// 0G Galileo Testnet configuration
 export const ogTestnet = {
   id: 9000,
-  name: '0G Testnet',
+  name: '0G Galileo Testnet',
   nativeCurrency: {
     decimals: 18,
     name: 'Ether',
@@ -47,37 +25,27 @@ export const ogTestnet = {
 
 // Wagmi configuration
 export const config = createConfig({
-  chains: [ogChain, ogTestnet, mainnet, sepolia],
+  chains: [ogTestnet],
   connectors: [
     injected(),
     metaMask(),
     walletConnect({
-      projectId: 'your-project-id', // Replace with actual WalletConnect project ID
+      projectId: process.env.VITE_WALLETCONNECT_PROJECT_ID, 
     }),
   ],
   transports: {
-    [ogChain.id]: http(),
     [ogTestnet.id]: http(),
-    [mainnet.id]: http(),
-    [sepolia.id]: http(),
   },
 })
 
-// Smart contract addresses (from deployment)
+// Smart contract addresses
 export const CONTRACT_ADDRESSES = {
-  [ogTestnet.id]: {
-    AgentRegistry: '0x1234567890123456789012345678901234567890', // Replace with actual addresses
-    AgentRental: '0x2345678901234567890123456789012345678901',
-    UsageTracking: '0x3456789012345678901234567890123456789012',
-  },
-  [ogChain.id]: {
-    AgentRegistry: '0x4567890123456789012345678901234567890123',
-    AgentRental: '0x5678901234567890123456789012345678901234',
-    UsageTracking: '0x6789012345678901234567890123456789012345',
-  },
+  AgentRegistry: '0x02D5C205B3E4F550a7c6D1432E3E12c106A25a9a',
+  AgentRental: '0xaffd76b978b9F48F3EEbEB20cB1B43C699855Ee3',
+  UsageTracking: '0x984E73D5F27859b05118205A9C73A3B5e0816B4B',
 }
 
-// Contract ABIs (simplified for demo)
+// Contract ABIs
 export const AGENT_REGISTRY_ABI = [
   {
     "inputs": [
@@ -195,8 +163,6 @@ export const shortenAddress = (address) => {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
 
-export const getExplorerUrl = (chainId, hash, type = 'tx') => {
-  const chain = chainId === ogChain.id ? ogChain : ogTestnet
-  return `${chain.blockExplorers.default.url}/${type}/${hash}`
+export const getExplorerUrl = (hash, type = 'tx') => {
+  return `${ogTestnet.blockExplorers.default.url}/${type}/${hash}`
 }
-

@@ -20,19 +20,22 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 // Wallet Integration
 import { useAccount, useSignMessage } from 'wagmi'
-import { InjectedConnector } from 'wagmi/connectors/injected'
 
 // Icons
-import { Play, Save, Zap, Trash2, AlertCircle, CheckCircle2, Wallet, ChevronRight, ChevronLeft } from 'lucide-react'
+import { Play, Save, Zap, Trash2, AlertCircle, CheckCircle2, Wallet, ChevronRight, ChevronLeft, RefreshCw, Loader2 } from 'lucide-react'
 
 // Custom Nodes
 import TriggerNode from './nodes/TriggerNode'
 import ActionNode from './nodes/ActionNode'
 import AINode from './nodes/AINode'
 import LogicNode from './nodes/LogicNode'
+
+// Backend API base URL
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:4000'
 
 // --- 🔧 Node Types & Default Configs ---
 const NODE_DEFAULTS = {
@@ -135,7 +138,6 @@ const initialNodes = [
     id: '1',
     type: 'trigger',
     position: { x: 100, y: 100 },
-    // FIXED: Added missing 'data:' property
     data: {
       ...NODE_DEFAULTS.trigger.webhook,
       type: 'webhook',
@@ -145,7 +147,6 @@ const initialNodes = [
     id: '2',
     type: 'ai',
     position: { x: 400, y: 100 },
-    // FIXED: Added space between 'data:' and '{'
     data: {
       ...NODE_DEFAULTS.ai.llm,
       type: 'llm',
@@ -155,7 +156,6 @@ const initialNodes = [
     id: '3',
     type: 'action',
     position: { x: 700, y: 100 },
-    // FIXED: Added space between 'data:' and '{'
     data: {
       ...NODE_DEFAULTS.action.email,
       type: 'email',
@@ -170,7 +170,7 @@ const initialEdges = [
 
 const WorkflowBuilder = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
-  const [edges, setEdges, onEdgesState] = useEdgesState(initialEdges)
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
   const [selectedNode, setSelectedNode] = useState(null)
   const [isRunning, setIsRunning] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(true)
@@ -185,30 +185,37 @@ const WorkflowBuilder = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [inferenceResult, setInferenceResult] = useState(null)
+  const [connectionChecking, setConnectionChecking] = useState(true)
 
   // --- 💡 Check Backend Connection ---
-  useEffect(() => {
-    const checkBackend = async () => {
-      try {
-        const response = await fetch('/api/health')
-        const data = await response.json()
-        setBackendConnected(data.status === 'ok')
-        
-        if (data.status === 'ok') {
-          // Load available services
-          const servicesRes = await fetch('/api/services')
+  const checkBackend = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/health`)
+      const data = await response.json()
+      setBackendConnected(data.status === 'ok')
+      setError('')
+      
+      if (data.status === 'ok') {
+        // Load available services
+        const servicesRes = await fetch(`${API_BASE}/api/services`)
+        if (servicesRes.ok) {
           const servicesData = await servicesRes.json()
-          setServices(servicesData)
+          setServices(servicesData || [])
         }
-      } catch (err) {
-        setError('Cannot connect to backend API')
       }
+    } catch (err) {
+      setBackendConnected(false)
+      setError('Cannot connect to backend API. Make sure the backend server is running on port 4000.')
+    } finally {
+      setConnectionChecking(false)
     }
-    
+  }
+
+  useEffect(() => {
     checkBackend()
     
     // Set up polling to keep connection status updated
-    const interval = setInterval(checkBackend, 30000)
+    const interval = setInterval(checkBackend, 10000) // Check every 10 seconds
     return () => clearInterval(interval)
   }, [])
 
@@ -216,9 +223,6 @@ const WorkflowBuilder = () => {
     setSelectedNode(node)
     setInferenceResult(null)
     setDrawerOpen(true)
-    if (node.type === 'ai' && node.data.config.acknowledged) {
-      setInferenceResult(prev => prev)
-    }
   }, [])
 
   const onConnect = useCallback(
@@ -242,14 +246,14 @@ const WorkflowBuilder = () => {
       },
     }
     setNodes((nds) => [...nds, newNode])
-  }, [nodes.length])
+  }, [nodes.length, setNodes])
 
   const deleteNode = useCallback(() => {
     if (!selectedNode) return
     setNodes((nds) => nds.filter(n => n.id !== selectedNode.id))
     setEdges((eds) => eds.filter(e => e.source !== selectedNode.id && e.target !== selectedNode.id))
     setSelectedNode(null)
-  }, [selectedNode])
+  }, [selectedNode, setNodes, setEdges])
 
   const runWorkflow = useCallback(() => {
     setIsRunning(true)
@@ -276,7 +280,7 @@ const WorkflowBuilder = () => {
   }, [nodes, edges])
 
   // --- 🧩 Update Node Data (Generic) ---
-  const updateNodeData = (fields) => {
+  const updateNodeData = useCallback((fields) => {
     if (!selectedNode) return
     setNodes((nds) =>
       nds.map((n) =>
@@ -291,7 +295,8 @@ const WorkflowBuilder = () => {
           : n
       )
     )
-  }
+    setSelectedNode(prev => prev ? { ...prev, data: { ...prev.data, ...fields } } : null)
+  }, [selectedNode, setNodes])
 
   // --- 🚀 Acknowledge Provider ---
   const acknowledgeProvider = async () => {
@@ -300,11 +305,21 @@ const WorkflowBuilder = () => {
       return
     }
     
-    if (!selectedNode.data.config.provider) return
+    if (!backendConnected) {
+      setError('Backend API not available')
+      return
+    }
+    
+    if (!selectedNode.data.config.provider) {
+      setError('Provider address is required')
+      return
+    }
+    
     setLoading(true)
+    setError('')
+    
     try {
-      // Acknowledge provider via backend API
-      const response = await fetch('/api/acknowledge', {
+      const response = await fetch(`${API_BASE}/api/acknowledge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -313,15 +328,17 @@ const WorkflowBuilder = () => {
       })
       
       const data = await response.json()
+      
       if (response.ok) {
         updateNodeData({
           config: { ...selectedNode.data.config, acknowledged: true },
         })
+        setError('')
       } else {
         throw new Error(data.error || 'Failed to acknowledge provider')
       }
     } catch (err) {
-      setError(`Ack failed: ${err.message}`)
+      setError(`Acknowledgment failed: ${err.message}`)
     } finally {
       setLoading(false)
     }
@@ -339,52 +356,58 @@ const WorkflowBuilder = () => {
       return
     }
     
-    if (!selectedNode.data.config.provider) return
+    if (!selectedNode.data.config.provider) {
+      setError('Provider address is required')
+      return
+    }
+
+    if (!selectedNode.data.config.prompt?.trim()) {
+      setError('Prompt is required')
+      return
+    }
+    
     setLoading(true)
     setError('')
+    setInferenceResult(null)
+    
     try {
-      // Sign a message to prove user ownership
-      const prompt = selectedNode.data.config.prompt || 'Hello'
-      const message = `Requesting inference for prompt: "${prompt.substring(0, 50)}..."`
-      const signature = await signMessageAsync({ message })
-      
-      // Send inference request to backend API
-      const response = await fetch('/api/inference', {
+      const response = await fetch(`${API_BASE}/api/inference`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           providerAddress: selectedNode.data.config.provider,
-          prompt,
+          prompt: selectedNode.data.config.prompt,
           userAddress: address,
-          signature
         }),
       })
       
       const data = await response.json()
+      
       if (!response.ok) {
         throw new Error(data.error || 'Inference request failed')
       }
       
-      // Update node config with model
-      const service = services.find(s => s.provider === selectedNode.data.config.provider)
-      const model = service ? service.model : data.model
-      
+      // Update node config with model info
       updateNodeData({
         config: {
           ...selectedNode.data.config,
-          model,
+          model: data.model,
           acknowledged: true
         }
       })
       
       setInferenceResult({
         response: data.response,
-        model: model,
+        model: data.model,
         valid: data.valid,
-        cost: `~0.005 OG`, // This would come from your billing system
+        chatId: data.chatId,
+        cost: `Processing...`, // This would come from your billing system
       })
+      
+      setError('')
     } catch (err) {
       setInferenceResult({ error: err.message })
+      setError(`Inference failed: ${err.message}`)
     } finally {
       setLoading(false)
     }
@@ -399,20 +422,71 @@ const WorkflowBuilder = () => {
         <div className="p-4">
           <h2 className="text-xl font-bold mb-4">Workflow Builder</h2>
 
+          {/* Backend Connection Status */}
+          <Alert className={`mb-4 ${backendConnected ? 'border-green-500' : 'border-red-500'}`}>
+            <div className="flex items-center">
+              {connectionChecking ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : backendConnected ? (
+                <CheckCircle2 className="h-4 w-4 mr-2 text-green-500" />
+              ) : (
+                <AlertCircle className="h-4 w-4 mr-2 text-red-500" />
+              )}
+              <AlertDescription className="text-sm">
+                Backend: {connectionChecking ? 'Checking...' : backendConnected ? 'Connected' : 'Disconnected'}
+                {!backendConnected && !connectionChecking && (
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={checkBackend}
+                    className="ml-2 h-6 px-2"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                  </Button>
+                )}
+              </AlertDescription>
+            </div>
+          </Alert>
+
+          {/* Available Services */}
+          {backendConnected && services.length > 0 && (
+            <Card className="mb-4">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Available Services ({services.length})</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div className="text-xs space-y-1 max-h-20 overflow-y-auto">
+                  {services.slice(0, 3).map((service, i) => (
+                    <div key={i} className="text-muted-foreground">
+                      {service.provider?.slice(0, 8)}... - {service.model}
+                    </div>
+                  ))}
+                  {services.length > 3 && <div className="text-muted-foreground">+{services.length - 3} more</div>}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Wallet */}
-          <Button
-            onClick={() => {
-              // This would be handled by wagmi's connect functionality
-            }}
-            disabled={isConnected || loading}
-            className="w-full mb-4"
-            variant={isConnected ? 'secondary' : 'default'}
-          >
-            <Wallet className="h-4 w-4 mr-2" />
-            {isConnected ? `Wallet Connected: ${address.slice(0, 6)}...${address.slice(-4)}` : 'Connect Wallet'}
-          </Button>
+          <Card className="mb-4">
+            <CardContent className="p-3">
+              <div className={`flex items-center text-sm ${isConnected ? 'text-green-600' : 'text-muted-foreground'}`}>
+                <Wallet className="h-4 w-4 mr-2" />
+                {isConnected ? (
+                  <span>Connected: {address?.slice(0, 6)}...{address?.slice(-4)}</span>
+                ) : (
+                  <span>Wallet not connected</span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
           
-          {error && <p className="text-xs text-red-500 mb-4">{error}</p>}
+          {error && (
+            <Alert className="mb-4 border-red-500">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription className="text-sm text-red-600">{error}</AlertDescription>
+            </Alert>
+          )}
 
           {/* Controls */}
           <div className="space-y-2 mb-4">
@@ -444,7 +518,7 @@ const WorkflowBuilder = () => {
                     variant="ghost"
                     size="sm"
                     className="w-full justify-start h-auto p-2"
-                    onClick={() => addNode(cat.category.toLowerCase().replace(' ', ''), n.type)}
+                    onClick={() => addNode(cat.category.toLowerCase().replace(' nodes', '').replace(' ', ''), n.type)}
                   >
                     <div className="text-left">
                       <div className="font-medium text-xs">{n.label}</div>
@@ -458,14 +532,14 @@ const WorkflowBuilder = () => {
         </div>
       </div>
 
-      {/* Canvas Container - Now the positioning context for the drawer */}
+      {/* Canvas Container */}
       <div className="flex-1 relative">
         {/* Canvas */}
         <ReactFlow
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesState}
+          onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onNodeClick={onNodeClick}
           nodeTypes={nodeTypes}
@@ -487,20 +561,18 @@ const WorkflowBuilder = () => {
                   <Separator orientation="vertical" className="h-4" />
                   <span>{nodes.length} nodes</span>
                   {isRunning && <Badge variant="secondary">Running...</Badge>}
+                  <div className={`h-2 w-2 rounded-full ${backendConnected ? 'bg-green-500' : 'bg-red-500'}`} />
                 </div>
               </CardContent>
             </Card>
           </Panel>
         </ReactFlow>
 
-        {/* --- ✅ RIGHT SIDEBAR: PROPERTIES DRAWER (attached to canvas) --- */}
+        {/* Properties Drawer */}
         <div 
           className={`absolute right-0 top-0 h-full bg-card border-l overflow-y-auto shadow-lg transition-all duration-300 z-50 ${
             drawerOpen ? 'w-80' : 'w-0 overflow-hidden'
           }`}
-          style={{ 
-            boxShadow: drawerOpen ? '0 0 20px rgba(0,0,0,0.1)' : 'none'
-          }}
         >
           {drawerOpen && (
             <div className="h-full">
@@ -529,7 +601,7 @@ const WorkflowBuilder = () => {
                     </Button>
                   </div>
 
-                  {/* --- Common Fields (label, type badge) --- */}
+                  {/* Common Fields */}
                   <div className="space-y-2">
                     <Label>Label</Label>
                     <Input
@@ -544,38 +616,73 @@ const WorkflowBuilder = () => {
 
                   <Separator />
 
-                  {/* --- LLM Node Config --- */}
+                  {/* LLM Node Config */}
                   {selectedNode.type === 'ai' && selectedNode.data.type === 'llm' && (
                     <div className="space-y-6">
                       <div className="space-y-2">
                         <Label>Provider Address</Label>
-                        <Input
-                          placeholder="0x..."
-                          value={selectedNode.data.config.provider || ''}
-                          onChange={(e) =>
-                            updateNodeData({
-                              config: {
-                                ...selectedNode.data.config,
-                                provider: e.target.value.trim(),
-                                acknowledged: false,
-                              },
-                            })
-                          }
-                        />
-                        {selectedNode.data.config.provider &&
-                          !selectedNode.data.config.acknowledged && (
-                            <Button
-                              size="sm"
-                              className="w-full mt-2"
-                              onClick={acknowledgeProvider}
-                              disabled={loading || !isConnected}
+                        <div className="space-y-2">
+                          <Input
+                            placeholder="0x... or select from available services"
+                            value={selectedNode.data.config.provider || ''}
+                            onChange={(e) =>
+                              updateNodeData({
+                                config: {
+                                  ...selectedNode.data.config,
+                                  provider: e.target.value.trim(),
+                                  acknowledged: false,
+                                },
+                              })
+                            }
+                          />
+                          {services.length > 0 && (
+                            <Select
+                              onValueChange={(provider) =>
+                                updateNodeData({
+                                  config: {
+                                    ...selectedNode.data.config,
+                                    provider,
+                                    acknowledged: false,
+                                  },
+                                })
+                              }
                             >
-                              Acknowledge Provider
-                            </Button>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Or select from available services..." />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {services.map((service, i) => (
+                                  <SelectItem key={i} value={service.provider}>
+                                    {service.provider.slice(0, 10)}... - {service.model}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           )}
+                        </div>
+                        
+                        {selectedNode.data.config.provider && !selectedNode.data.config.acknowledged && (
+                          <Button
+                            size="sm"
+                            className="w-full mt-2"
+                            onClick={acknowledgeProvider}
+                            disabled={loading || !isConnected || !backendConnected}
+                          >
+                            {loading ? (
+                              <>
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                Acknowledging...
+                              </>
+                            ) : (
+                              'Acknowledge Provider'
+                            )}
+                          </Button>
+                        )}
+                        
                         {selectedNode.data.config.acknowledged && (
                           <Badge className="bg-green-500 text-white mt-2">
-                            Acknowledged ✅
+                            <CheckCircle2 className="h-3 w-3 mr-1" />
+                            Acknowledged
                           </Badge>
                         )}
                       </div>
@@ -583,6 +690,7 @@ const WorkflowBuilder = () => {
                       <div className="space-y-2">
                         <Label>Prompt</Label>
                         <Textarea
+                          placeholder="Enter your prompt here..."
                           value={selectedNode.data.config.prompt || ''}
                           onChange={(e) =>
                             updateNodeData({
@@ -597,39 +705,51 @@ const WorkflowBuilder = () => {
                         size="sm"
                         className="w-full"
                         onClick={runInference}
-                        disabled={!isConnected || !selectedNode.data.config.provider || loading}
+                        disabled={!isConnected || !selectedNode.data.config.provider || !backendConnected || loading || !selectedNode.data.config.prompt?.trim()}
                       >
-                        Run Inference
+                        {loading ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Running Inference...
+                          </>
+                        ) : (
+                          'Run Inference'
+                        )}
                       </Button>
 
                       {inferenceResult && (
-                        <Card className="p-3 mt-2 bg-muted text-xs">
+                        <Card className="p-3 mt-2 bg-muted">
                           {inferenceResult.error ? (
                             <div className="text-red-500">
                               <AlertCircle className="h-4 w-4 inline mr-1" />
-                              {inferenceResult.error}
+                              <strong>Error:</strong> {inferenceResult.error}
                             </div>
                           ) : (
-                            <>
-                              <div className="flex items-center">
-                                <CheckCircle2 className="h-4 w-4 text-green-500 mr-1" />
+                            <div className="space-y-2">
+                              <div className="flex items-center text-green-600">
+                                <CheckCircle2 className="h-4 w-4 mr-1" />
                                 <strong>Success</strong>
                               </div>
-                              <div>
-                                <strong>Model:</strong> {inferenceResult.model}
+                              <div className="text-xs space-y-1">
+                                <div><strong>Model:</strong> {inferenceResult.model}</div>
+                                <div><strong>Chat ID:</strong> {inferenceResult.chatId}</div>
+                                <div><strong>Valid:</strong> {inferenceResult.valid ? 'Yes' : 'No'}</div>
                               </div>
-                              <div>
-                                <strong>Cost:</strong> {inferenceResult.cost}
+                              <Separator />
+                              <div className="text-sm">
+                                <strong>Response:</strong>
+                                <p className="mt-1 p-2 bg-background rounded text-xs italic">
+                                  {inferenceResult.response}
+                                </p>
                               </div>
-                              <p className="mt-2 italic">{inferenceResult.response}</p>
-                            </>
+                            </div>
                           )}
                         </Card>
                       )}
                     </div>
                   )}
 
-                  {/* --- Webhook Node Config --- */}
+                  {/* Webhook Node Config */}
                   {selectedNode.type === 'trigger' && selectedNode.data.type === 'webhook' && (
                     <div className="space-y-6">
                       <div className="space-y-2">
@@ -690,7 +810,6 @@ const WorkflowBuilder = () => {
             </Button>
           )}
         </div>
-        {/* --- END PROPERTIES DRAWER --- */}
       </div>
     </div>
   )
