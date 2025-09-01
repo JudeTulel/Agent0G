@@ -1,3 +1,4 @@
+// --- Agent Registry Contract Setup ---
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -7,8 +8,35 @@ const fs = require('fs');
 const { ethers } = require('ethers');
 const { createZGComputeNetworkBroker } = require('@0glabs/0g-serving-broker');
 const { ZgFile, Indexer, Batcher, KvClient } = require('@0glabs/0g-ts-sdk');
-
 const app = express();
+
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Import and mount workflow routes
+const workflowRouter = require('./routes/workflow');
+app.use('/api/workflow', workflowRouter);
+
+// --- Multer Setup for File Uploads ---
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${Date.now()}-${file.originalname}`;
+    cb(null, uniqueName);
+  }
+});
+const upload = multer({ storage });
+
 
 // Trim and validate all configuration URLs
 const RPC_URL = (process.env.RPC_URL || 'https://evmrpc-testnet.0g.ai').trim();
@@ -16,36 +44,51 @@ const INDEXER_RPC = (process.env.INDEXER_RPC || 'https://indexer-storage-testnet
 const KV_NODE_URL = (process.env.KV_NODE_URL || 'http://3.101.147.150:6789').trim();
 const FLOW_CONTRACT_ADDRESS = process.env.FLOW_CONTRACT_ADDRESS || '0xbD75117F80b4E22698D0Cd7612d92BDb8eaff628'; // From 0G documentation [[3]]
 
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
-}));
-app.use(express.json({ limit: '10mb' }));
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = './uploads';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Use original filename with timestamp to avoid conflicts
-    const uniqueName = `${Date.now()}-${file.originalname}`;
-    cb(null, uniqueName);
-  }
-});
-
-const upload = multer({ 
-  storage,
-  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
-});
-
 // Initialize providers and clients
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const serviceWallet = new ethers.Wallet(process.env.SERVICE_PRIVATE_KEY, provider);
+
+// --- Agent Registry Contract Setup ---
+const agentRegistryAbi = require('../contracts/agentsZeroG/out/AgentRegistry.sol/AgentRegistry.json').abi;
+const AGENT_REGISTRY_ADDRESS = process.env.AGENT_REGISTRY_ADDRESS || '0x02D5C205B3E4F550a7c6D1432E3E12c106A25a9a';
+let agentRegistryContract;
+if (AGENT_REGISTRY_ADDRESS && ethers.isAddress(AGENT_REGISTRY_ADDRESS)) {
+  agentRegistryContract = new ethers.Contract(
+    AGENT_REGISTRY_ADDRESS,
+    agentRegistryAbi,
+    serviceWallet
+  );
+}
+
+// --- Register Workflow as Agent Endpoint ---
+app.post('/api/agent/register', async (req, res) => {
+  try {
+    const { name, description, category, workflowHash, pricePerUse, subscriptionPrice } = req.body;
+    if (!agentRegistryContract) {
+      return res.status(500).json({ error: 'AgentRegistry contract not configured' });
+    }
+    const tx = await agentRegistryContract.registerAgent(
+      name,
+      description,
+      category,
+      workflowHash,
+      pricePerUse,
+      subscriptionPrice
+    );
+    const receipt = await tx.wait();
+    const event = receipt.logs
+      .map(log => {
+        try { return agentRegistryContract.interface.parseLog(log); } catch { return null; }
+      })
+      .find(e => e && e.name === 'AgentRegistered');
+    const agentId = event ? event.args.agentId.toString() : null;
+    res.json({ success: true, agentId, txHash: tx.hash });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to register agent', details: err.message });
+  }
+});
+
+
 
 // 0G Storage configuration
 const STORAGE_CONFIG = {
@@ -112,12 +155,12 @@ const initBatcher = async (retries = 3) => {
       console.log(`🔄 Initializing Batcher (attempt ${i+1}/${retries})...`);
       console.log('Using Flow contract:', FLOW_CONTRACT_ADDRESS);
       
-      // Select nodes for storage (3 for redundancy)
-      const [nodes, nodeErr] = await storageIndexer.selectNodes(3);
+      // Select nodes for storage (1 for minimal replication)
+      const [nodes, nodeErr] = await storageIndexer.selectNodes(1);
       if (nodeErr) throw new Error(`Failed to select nodes: ${nodeErr}`);
       
       selectedNodes = nodes;
-      console.log(`✅ Selected ${nodes.length} storage nodes:`, nodes.map(n => n.url));
+      console.log(`✅ Selected ${nodes.length} storage node:`, nodes.map(n => n.url));
       
       // Initialize Batcher with service wallet
       batcher = new Batcher(
@@ -221,6 +264,16 @@ app.get('/api/services', requireBroker, async (req, res) => {
   }
 });
 
+// Webhook endpoint for workflow trigger
+app.post('/api/webhook/:workflowId', async (req, res) => {
+  const { workflowId } = req.params;
+  const payload = req.body;
+  // Here you would look up the workflow, process the webhook, and trigger the workflow logic
+  // For now, just acknowledge receipt
+  res.json({ success: true, workflowId, received: payload });
+});
+
+
 // Acknowledge provider
 app.post('/api/acknowledge', requireBroker, async (req, res) => {
   const { providerAddress } = req.body;
@@ -259,7 +312,7 @@ app.post('/api/inference', requireBroker, async (req, res) => {
     });
   }
 
-  console.log(`🧠 Processing inference request for ${userAddress}`);
+  console.log('🧠 Processing inference request for', userAddress);
 
   try {
     const { endpoint, model } = await broker.inference.getServiceMetadata(providerAddress);

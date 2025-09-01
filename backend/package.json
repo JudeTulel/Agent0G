@@ -2,9 +2,10 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
@@ -12,10 +13,12 @@
   "type": "commonjs",
   "dependencies": {
     "@0glabs/0g-serving-broker": "^0.3.1",
+    "@0glabs/0g-ts-sdk": "^0.3.1",
     "axios": "^1.11.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "ethers": "^6.15.0",
-    "express": "^5.1.0"
+    "express": "^4.18.2",
+    "multer": "^2.0.2"
   }
 }
