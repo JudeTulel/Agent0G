@@ -313,7 +313,7 @@ function App() {
                     <SelectItem value="free">Free</SelectItem>
                     <SelectItem value="low">Low (≤0.05 ETH)</SelectItem>
                     <SelectItem value="medium">Medium (0.05-0.1 ETH)</SelectItem>
-                    <SelectItem value="high">High (>0.1 ETH)</SelectItem>
+                    <SelectItem value="high">High ({'>'}0.1 ETH)</SelectItem>
                   </SelectContent>
                 </Select>
 

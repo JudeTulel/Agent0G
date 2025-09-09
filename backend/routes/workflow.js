@@ -63,6 +63,20 @@ const processWorkflowNode = async (node, broker, uploadedFiles) => {
       }
       return node;
 
+    case 'httpRequest':
+      // Handle HTTP request node
+      return {
+        ...node,
+        status: 'configured'
+      };
+
+    case 'googleSheets':
+      // Handle Google Sheets node
+      return {
+        ...node,
+        status: 'configured'
+      };
+
     default:
       return node;
   }
@@ -177,3 +191,140 @@ router.get('/:workflowId', async (req, res) => {
 });
 
 module.exports = router;
+
+// Execute workflow endpoint
+router.post('/execute', async (req, res) => {
+  const { workflowId, nodeId } = req.body;
+
+  if (!workflowId || !nodeId) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      details: 'workflowId and nodeId are required'
+    });
+  }
+
+  try {
+    // Get workflow data from KV storage
+    const kvClient = req.app.locals.kvClient;
+    const value = await kvClient.getValue(
+      'workflows',
+      ethers.encodeBase64(Buffer.from(workflowId))
+    );
+
+    if (!value || value === '0x') {
+      return res.status(404).json({
+        error: 'Workflow not found',
+        workflowId
+      });
+    }
+
+    // Decode workflow data
+    const workflowData = JSON.parse(
+      Buffer.from(value.slice(2), 'hex').toString('utf-8')
+    );
+
+    // Find the specific node to execute
+    const node = workflowData.nodes.find(n => n.id === nodeId);
+    if (!node) {
+      return res.status(404).json({
+        error: 'Node not found in workflow',
+        workflowId,
+        nodeId
+      });
+    }
+
+    let result = null;
+
+    // Execute based on node type
+    switch (node.type) {
+      case 'httpRequest':
+        // Execute HTTP request
+        const httpResponse = await fetch(node.data.url, {
+          method: node.data.method || 'GET',
+          headers: {
+            'User-Agent': 'Agent0G-Workflow/1.0',
+            'Content-Type': 'application/json',
+            ...Object.fromEntries(
+              (node.data.headers || [])
+                .filter(h => h.key && h.value)
+                .map(h => [h.key, h.value])
+            )
+          },
+          body: (node.data.method !== 'GET' && node.data.body) ? node.data.body : undefined
+        });
+
+        const responseText = await httpResponse.text();
+        let responseData = null;
+
+        try {
+          responseData = JSON.parse(responseText);
+        } catch (parseErr) {
+          responseData = responseText;
+        }
+
+        result = {
+          status: httpResponse.status,
+          statusText: httpResponse.statusText,
+          headers: Object.fromEntries(httpResponse.headers.entries()),
+          data: responseData,
+          url: httpResponse.url
+        };
+        break;
+
+      case 'googleSheets':
+        // Execute Google Sheets operation
+        const sheetsConfig = node.data;
+        const token = req.body.accessToken || localStorage.getItem('google_access_token');
+        
+        if (!token) {
+          throw new Error('Google access token required for Google Sheets operations');
+        }
+
+        const sheetsResponse = await fetch('http://localhost:3001/api/google-sheets', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            operation: sheetsConfig.operation || 'read',
+            spreadsheetId: sheetsConfig.selectedSpreadsheet,
+            sheetName: sheetsConfig.selectedSheet,
+            range: sheetsConfig.range,
+            data: req.body.inputData, // Data from connected nodes
+            accessToken: token
+          })
+        });
+
+        if (sheetsResponse.ok) {
+          result = await sheetsResponse.json();
+        } else {
+          throw new Error(`Google Sheets operation failed: ${sheetsResponse.statusText}`);
+        }
+        break;
+
+      default:
+        return res.status(400).json({
+          error: 'Unsupported node type for execution',
+          nodeType: node.type
+        });
+    }
+
+    res.json({
+      success: true,
+      workflowId,
+      nodeId,
+      nodeType: node.type,
+      result,
+      executedAt: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('Workflow execution failed:', err);
+    res.status(500).json({
+      error: 'Failed to execute workflow node',
+      details: err.message,
+      workflowId,
+      nodeId
+    });
+  }
+});
