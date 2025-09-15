@@ -43,7 +43,8 @@ import {
   Plus,
   Trash2,
   Copy,
-  X
+  X,
+  RefreshCw
 } from 'lucide-react'
 
 // Define nodeTypes outside component to prevent recreation on every render
@@ -137,6 +138,71 @@ const WorkflowBuilder = () => {
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(nodes)
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState(edges)
 
+  // State for Google Sheets
+  const [spreadsheets, setSpreadsheets] = useState([])
+  const [loadingSpreadsheets, setLoadingSpreadsheets] = useState(false)
+
+  // State for data flow sidebar
+  const [selectedEdge, setSelectedEdge] = useState(null)
+  const [dataFlow, setDataFlow] = useState(null)
+  const [dataFormat, setDataFormat] = useState('json')
+
+  // Function to fetch spreadsheets
+  const fetchSpreadsheets = async () => {
+    const accessToken = localStorage.getItem('google_access_token')
+    if (!accessToken) {
+      alert('Please authenticate with Google first.')
+      return
+    }
+    
+    setLoadingSpreadsheets(true)
+    try {
+      const response = await fetch(
+        'https://www.googleapis.com/drive/v3/files?q=mimeType="application/vnd.google-apps.spreadsheet"&fields=files(id,name)&orderBy=name',
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      )
+      
+      if (response.ok) {
+        const data = await response.json()
+        setSpreadsheets(data.files || [])
+      } else if (response.status === 401) {
+        console.error('Unauthorized: Token may be expired. Please re-authenticate.')
+        localStorage.removeItem('google_access_token') // Clear invalid token
+        alert('Authentication expired. Please re-authenticate with Google.')
+        setSpreadsheets([])
+      } else {
+        console.error('Failed to fetch spreadsheets:', response.statusText)
+        alert('Failed to load spreadsheets. Please try again.')
+        setSpreadsheets([])
+      }
+    } catch (error) {
+      console.error('Error fetching spreadsheets:', error)
+      alert('Network error. Please check your connection and try again.')
+      setSpreadsheets([])
+    } finally {
+      setLoadingSpreadsheets(false)
+    }
+  }
+
+  // Function to get data flow for an edge
+  const getDataFlow = (edge) => {
+    const sourceNode = nodes.find(n => n.id === edge.source)
+    const targetNode = nodes.find(n => n.id === edge.target)
+    if (sourceNode && targetNode && sourceNode.data.result) {
+      return {
+        source: sourceNode.data.label || sourceNode.id,
+        target: targetNode.data.label || targetNode.id,
+        data: sourceNode.data.result
+      }
+    }
+    return null
+  }
+
   // Sync Zustand state with ReactFlow state
   useEffect(() => {
     setRfNodes(nodes)
@@ -224,198 +290,31 @@ const WorkflowBuilder = () => {
                 />
               </div>
               <div>
-                <Label htmlFor="trigger-type">Trigger Type</Label>
+                <Label htmlFor="trigger-url">Webhook URL</Label>
+                <Input
+                  id="trigger-url"
+                  value={node.data.config?.url || ''}
+                  onChange={(e) => handlePropertyChange('config.url', e.target.value)}
+                  placeholder="https://api.example.com/webhook"
+                />
+              </div>
+              <div>
+                <Label htmlFor="trigger-method">HTTP Method</Label>
                 <Select
-                  value={node.data.config?.type || ''}
-                  onValueChange={(value) => handlePropertyChange('config.type', value)}
+                  value={node.data.config?.method || 'POST'}
+                  onValueChange={(value) => handlePropertyChange('config.method', value)}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select trigger type" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="webhook">Webhook</SelectItem>
-                    <SelectItem value="schedule">Schedule</SelectItem>
-                    <SelectItem value="event">Blockchain Event</SelectItem>
+                    <SelectItem value="GET">GET</SelectItem>
+                    <SelectItem value="POST">POST</SelectItem>
+                    <SelectItem value="PUT">PUT</SelectItem>
+                    <SelectItem value="DELETE">DELETE</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              {node.data.config?.type === 'webhook' && (
-                <>
-                  <div>
-                    <Label htmlFor="webhook-url">Webhook URL</Label>
-                    <Input
-                      id="webhook-url"
-                      value={node.data.config?.url || ''}
-                      onChange={(e) => handlePropertyChange('config.url', e.target.value)}
-                      placeholder="https://api.example.com/webhook"
-                      className="font-mono"
-                    />
-                    <div className="text-xs text-muted-foreground mt-1">
-                      The URL that will trigger this workflow when called
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="webhook-method">HTTP Method</Label>
-                      <Select
-                        value={node.data.config?.method || 'POST'}
-                        onValueChange={(value) => handlePropertyChange('config.method', value)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="GET">GET</SelectItem>
-                          <SelectItem value="POST">POST</SelectItem>
-                          <SelectItem value="PUT">PUT</SelectItem>
-                          <SelectItem value="DELETE">DELETE</SelectItem>
-                          <SelectItem value="PATCH">PATCH</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label htmlFor="webhook-timeout">Timeout (seconds)</Label>
-                      <Input
-                        id="webhook-timeout"
-                        type="number"
-                        min="1"
-                        max="300"
-                        value={node.data.config?.timeout || 30}
-                        onChange={(e) => handlePropertyChange('config.timeout', parseInt(e.target.value) || 30)}
-                        placeholder="30"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label htmlFor="webhook-headers">Headers</Label>
-                    <Textarea
-                      id="webhook-headers"
-                      value={node.data.config?.headers ? JSON.stringify(node.data.config.headers, null, 2) : ''}
-                      onChange={(e) => {
-                        try {
-                          const headers = JSON.parse(e.target.value);
-                          handlePropertyChange('config.headers', headers);
-                        } catch (err) {
-                          // Invalid JSON, don't update
-                        }
-                      }}
-                      placeholder='{"Content-Type": "application/json"}'
-                      rows={3}
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="webhook-secret">Webhook Secret</Label>
-                    <Input
-                      id="webhook-secret"
-                      type="password"
-                      value={node.data.config?.secret || ''}
-                      onChange={(e) => handlePropertyChange('config.secret', e.target.value)}
-                      placeholder="Optional webhook verification secret"
-                    />
-                  </div>
-                </>
-              )}
-              {node.data.config?.type === 'schedule' && (
-                <>
-                  <div>
-                    <Label htmlFor="schedule-timer">Timer Interval (seconds)</Label>
-                    <Input
-                      id="schedule-timer"
-                      type="number"
-                      min="1"
-                      value={node.data.config?.timer || ''}
-                      onChange={(e) => handlePropertyChange('config.timer', parseInt(e.target.value) || 0)}
-                      placeholder="60"
-                    />
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Run every X seconds (leave empty to use cron expression)
-                    </div>
-                  </div>
-                  <div>
-                    <Label htmlFor="schedule-cron">Cron Expression</Label>
-                    <Input
-                      id="schedule-cron"
-                      value={node.data.config?.cron || ''}
-                      onChange={(e) => handlePropertyChange('config.cron', e.target.value)}
-                      placeholder="0 0 * * * (daily at midnight)"
-                      disabled={node.data.config?.timer > 0}
-                    />
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Use cron format: minute hour day month day-of-week
-                    </div>
-                  </div>
-                  <div>
-                    <Label htmlFor="schedule-timezone">Timezone</Label>
-                    <Select
-                      value={node.data.config?.timezone || 'UTC'}
-                      onValueChange={(value) => handlePropertyChange('config.timezone', value)}
-                      disabled={node.data.config?.timer > 0}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="UTC">UTC</SelectItem>
-                        <SelectItem value="America/New_York">Eastern Time</SelectItem>
-                        <SelectItem value="America/Chicago">Central Time</SelectItem>
-                        <SelectItem value="America/Denver">Mountain Time</SelectItem>
-                        <SelectItem value="America/Los_Angeles">Pacific Time</SelectItem>
-                        <SelectItem value="Europe/London">London</SelectItem>
-                        <SelectItem value="Europe/Paris">Paris</SelectItem>
-                        <SelectItem value="Asia/Tokyo">Tokyo</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label htmlFor="schedule-description">Description</Label>
-                    <Input
-                      id="schedule-description"
-                      value={node.data.config?.description || ''}
-                      onChange={(e) => handlePropertyChange('config.description', e.target.value)}
-                      placeholder="What does this schedule do?"
-                    />
-                  </div>
-                </>
-              )}
-              {node.data.config?.type === 'event' && (
-                <>
-                  <div>
-                    <Label htmlFor="event-contract">Contract Address</Label>
-                    <Input
-                      id="event-contract"
-                      value={node.data.config?.contractAddress || ''}
-                      onChange={(e) => handlePropertyChange('config.contractAddress', e.target.value)}
-                      placeholder="0x..."
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="event-name">Event Name</Label>
-                    <Input
-                      id="event-name"
-                      value={node.data.config?.eventName || ''}
-                      onChange={(e) => handlePropertyChange('config.eventName', e.target.value)}
-                      placeholder="Transfer, Approval, etc."
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="event-network">Network</Label>
-                    <Select
-                      value={node.data.config?.network || '0g'}
-                      onValueChange={(value) => handlePropertyChange('config.network', value)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="0g">0G Chain</SelectItem>
-                        <SelectItem value="ethereum">Ethereum</SelectItem>
-                        <SelectItem value="polygon">Polygon</SelectItem>
-                        <SelectItem value="bsc">BSC</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </>
-              )}
             </div>
           )
 
@@ -436,14 +335,7 @@ const WorkflowBuilder = () => {
                 <Select
                   value={node.data.config?.providerAddress || ''}
                   onValueChange={(value) => {
-                    // Find the selected service to update model and other fields
-                    const selectedService = availableServices.find(service => service.providerAddress === value);
-                    if (selectedService) {
-                      handlePropertyChange('config.providerAddress', value);
-                      handlePropertyChange('config.model', selectedService.model);
-                      handlePropertyChange('config.endpoint', selectedService.endpoint);
-                      handlePropertyChange('config.provider', selectedService.provider);
-                    }
+                    handlePropertyChange('config.providerAddress', value);
                   }}
                   disabled={isLoadingServices}
                 >
@@ -453,7 +345,7 @@ const WorkflowBuilder = () => {
                   <SelectContent>
                     {availableServices.map((service) => (
                       <SelectItem key={service.providerAddress} value={service.providerAddress}>
-                        {service.provider} - {service.model} ({service.serviceType})
+                        {service.provider}
                       </SelectItem>
                     ))}
                     {availableServices.length === 0 && !isLoadingServices && (
@@ -463,67 +355,17 @@ const WorkflowBuilder = () => {
                     )}
                   </SelectContent>
                 </Select>
-              </div>
-              <div>
-                <Label htmlFor="ai-model">Model</Label>
-                <Select
-                  value={node.data.config?.model || ''}
-                  onValueChange={(value) => {
-                    // Find the selected service to update endpoint and other fields
-                    const selectedService = availableServices.find(service => service.model === value);
-                    if (selectedService) {
-                      handlePropertyChange('config.model', value);
-                      handlePropertyChange('config.endpoint', selectedService.endpoint);
-                      handlePropertyChange('config.providerAddress', selectedService.providerAddress);
-                    }
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    loadServices();
                   }}
-                  disabled={isLoadingServices}
+                  className="mt-2 w-full"
                 >
-                  <SelectTrigger>
-                    <SelectValue placeholder={isLoadingServices ? "Loading models..." : "Select AI model"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableServices
-                      .filter(service => !node.data.config?.providerAddress || service.providerAddress === node.data.config.providerAddress)
-                      .map((service) => (
-                        <SelectItem key={`${service.providerAddress}-${service.model}`} value={service.model}>
-                          {service.model} ({service.provider})
-                        </SelectItem>
-                      ))}
-                    {availableServices.length === 0 && !isLoadingServices && (
-                      <SelectItem value="" disabled>
-                        No models available
-                      </SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
+                  Refresh Services
+                </Button>
               </div>
-              <div>
-                <Label htmlFor="ai-endpoint">Endpoint</Label>
-                <Input
-                  id="ai-endpoint"
-                  value={node.data.config?.endpoint || ''}
-                  onChange={(e) => handlePropertyChange('config.endpoint', e.target.value)}
-                  placeholder="API endpoint URL"
-                  readOnly
-                />
-              </div>
-              {node.data.config?.providerAddress && (
-                <div className="p-3 bg-muted/50 rounded-md">
-                  <Label className="text-sm font-medium">Pricing Information</Label>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {(() => {
-                      const service = availableServices.find(s => s.providerAddress === node.data.config.providerAddress);
-                      if (service) {
-                        const inputPrice = parseInt(service.inputPrice) / 1e18; // Convert from wei
-                        const outputPrice = parseInt(service.outputPrice) / 1e18; // Convert from wei
-                        return `Input: ${inputPrice.toFixed(6)} ETH/token | Output: ${outputPrice.toFixed(6)} ETH/token`;
-                      }
-                      return 'Pricing information not available';
-                    })()}
-                  </div>
-                </div>
-              )}
               <div>
                 <Label htmlFor="ai-prompt">Prompt</Label>
                 <Textarea
@@ -534,36 +376,8 @@ const WorkflowBuilder = () => {
                   rows={6}
                   className="font-mono text-sm"
                 />
-                <div className="text-xs text-muted-foreground mt-1">
-                  Use {`{input}`} to reference data from previous nodes
-                </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="ai-temperature">Temperature: {node.data.config?.temperature || 0.7}</Label>
-                  <Slider
-                    id="ai-temperature"
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    value={[node.data.config?.temperature || 0.7]}
-                    onValueChange={(value) => handlePropertyChange('config.temperature', value[0])}
-                    className="mt-2"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="ai-max-tokens">Max Tokens</Label>
-                  <Input
-                    id="ai-max-tokens"
-                    type="number"
-                    min="1"
-                    max="4096"
-                    value={node.data.config?.maxTokens || 1024}
-                    onChange={(e) => handlePropertyChange('config.maxTokens', parseInt(e.target.value) || 1024)}
-                    placeholder="1024"
-                  />
-                </div>
-              </div>              {node.data.result && (
+              {node.data.result && (
                 <>
                   <Separator />
                   <div>
@@ -967,10 +781,19 @@ const WorkflowBuilder = () => {
                 />
               </div>
               <div>
+                <Label htmlFor="http-url">URL</Label>
+                <Input
+                  id="http-url"
+                  value={node.data.config?.url || ''}
+                  onChange={(e) => handlePropertyChange('config.url', e.target.value)}
+                  placeholder="https://api.example.com"
+                />
+              </div>
+              <div>
                 <Label htmlFor="http-method">HTTP Method</Label>
                 <Select
-                  value={node.data.method || 'GET'}
-                  onValueChange={(value) => handlePropertyChange('method', value)}
+                  value={node.data.config?.method || 'GET'}
+                  onValueChange={(value) => handlePropertyChange('config.method', value)}
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -979,158 +802,26 @@ const WorkflowBuilder = () => {
                     <SelectItem value="GET">GET</SelectItem>
                     <SelectItem value="POST">POST</SelectItem>
                     <SelectItem value="PUT">PUT</SelectItem>
-                    <SelectItem value="PATCH">PATCH</SelectItem>
                     <SelectItem value="DELETE">DELETE</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <Label htmlFor="http-url">URL</Label>
-                <Input
-                  id="http-url"
-                  value={node.data.url || ''}
-                  onChange={(e) => handlePropertyChange('url', e.target.value)}
-                  placeholder="https://api.example.com/endpoint"
+                <Label htmlFor="http-body">Request Body</Label>
+                <Textarea
+                  id="http-body"
+                  value={node.data.config?.body || ''}
+                  onChange={(e) => handlePropertyChange('config.body', e.target.value)}
+                  placeholder="JSON or text body"
+                  rows={4}
                 />
               </div>
-              <div>
-                <Label htmlFor="http-headers">Headers</Label>
-                <div className="space-y-2">
-                  {(node.data.headers || []).map((header, index) => (
-                    <div key={index} className="flex gap-2">
-                      <Input
-                        placeholder="Key"
-                        value={header.key || ''}
-                        onChange={(e) => {
-                          const newHeaders = [...(node.data.headers || [])];
-                          newHeaders[index] = { ...newHeaders[index], key: e.target.value };
-                          handlePropertyChange('headers', newHeaders);
-                        }}
-                      />
-                      <Input
-                        placeholder="Value"
-                        value={header.value || ''}
-                        onChange={(e) => {
-                          const newHeaders = [...(node.data.headers || [])];
-                          newHeaders[index] = { ...newHeaders[index], value: e.target.value };
-                          handlePropertyChange('headers', newHeaders);
-                        }}
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          const newHeaders = (node.data.headers || []).filter((_, i) => i !== index);
-                          handlePropertyChange('headers', newHeaders);
-                        }}
-                      >
-                        ×
-                      </Button>
-                    </div>
-                  ))}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      const newHeaders = [...(node.data.headers || []), { key: '', value: '' }];
-                      handlePropertyChange('headers', newHeaders);
-                    }}
-                  >
-                    Add Header
-                  </Button>
-                </div>
-              </div>
-              {(node.data.method === 'POST' || node.data.method === 'PUT' || node.data.method === 'PATCH') && (
-                <div>
-                  <Label htmlFor="http-body">Request Body</Label>
-                  <Textarea
-                    id="http-body"
-                    value={node.data.body || ''}
-                    onChange={(e) => handlePropertyChange('body', e.target.value)}
-                    placeholder="JSON or text body"
-                    rows={4}
-                  />
-                </div>
-              )}
-              <div>
-                <Label htmlFor="http-auth">Authentication</Label>
-                <Select
-                  value={node.data.authType || 'none'}
-                  onValueChange={(value) => handlePropertyChange('authType', value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">None</SelectItem>
-                    <SelectItem value="basic">Basic Auth</SelectItem>
-                    <SelectItem value="bearer">Bearer Token</SelectItem>
-                    <SelectItem value="apiKey">API Key</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {node.data.authType === 'basic' && (
-                <div className="grid grid-cols-2 gap-2">
-                  <Input
-                    placeholder="Username"
-                    value={node.data.authData?.username || ''}
-                    onChange={(e) => handlePropertyChange('authData.username', e.target.value)}
-                  />
-                  <Input
-                    type="password"
-                    placeholder="Password"
-                    value={node.data.authData?.password || ''}
-                    onChange={(e) => handlePropertyChange('authData.password', e.target.value)}
-                  />
-                </div>
-              )}
-              {node.data.authType === 'bearer' && (
-                <Input
-                  placeholder="Bearer Token"
-                  value={node.data.authData?.token || ''}
-                  onChange={(e) => handlePropertyChange('authData.token', e.target.value)}
-                />
-              )}
-              {node.data.authType === 'apiKey' && (
-                <div className="grid grid-cols-2 gap-2">
-                  <Input
-                    placeholder="API Key"
-                    value={node.data.authData?.apiKey || ''}
-                    onChange={(e) => handlePropertyChange('authData.apiKey', e.target.value)}
-                  />
-                  <Input
-                    placeholder="Header Name"
-                    value={node.data.authData?.headerName || ''}
-                    onChange={(e) => handlePropertyChange('authData.headerName', e.target.value)}
-                  />
-                </div>
-              )}
-              
-              {node.data.result && (
-                <>
-                  <Separator />
-                  <div>
-                    <Label>Last Execution Result</Label>
-                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-32 overflow-y-auto">
-                      <div className="font-medium mb-1">Status: {node.data.result.status}</div>
-                      <div className="text-muted-foreground">
-                        {typeof node.data.result.data === 'string' 
-                          ? node.data.result.data 
-                          : JSON.stringify(node.data.result.data, null, 2)}
-                      </div>
-                      {node.data.lastExecuted && (
-                        <div className="text-xs text-muted-foreground mt-2">
-                          Executed: {new Date(node.data.lastExecuted).toLocaleString()}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              )}
             </div>
           )
 
         case 'googleSheets':
+          const isAuthenticated = !!localStorage.getItem('google_access_token')
+          
           return (
             <div className="space-y-4">
               <div>
@@ -1146,7 +837,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label>Authentication Status</Label>
                 <div className="mt-2">
-                  {localStorage.getItem('google_access_token') ? (
+                  {isAuthenticated ? (
                     <Badge variant="secondary" className="bg-green-100 text-green-800">
                       ✓ Connected to Google
                     </Badge>
@@ -1159,29 +850,51 @@ const WorkflowBuilder = () => {
               </div>
 
               <div>
-                <Label htmlFor="sheets-operation">Operation</Label>
+                <Label htmlFor="sheets-spreadsheet">Spreadsheet</Label>
                 <Select
-                  value={node.data.operation || 'read'}
-                  onValueChange={(value) => handlePropertyChange('operation', value)}
+                  value={node.data.selectedSpreadsheet || ''}
+                  onValueChange={(value) => {
+                    handlePropertyChange('selectedSpreadsheet', value)
+                    // Optionally fetch sheet names here if needed
+                  }}
+                  onOpenChange={(open) => {
+                    if (open && isAuthenticated && spreadsheets.length === 0 && !loadingSpreadsheets) {
+                      fetchSpreadsheets()
+                    }
+                  }}
+                  disabled={!isAuthenticated || loadingSpreadsheets}
                 >
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder={
+                      !isAuthenticated 
+                        ? "Authenticate to load spreadsheets" 
+                        : loadingSpreadsheets 
+                          ? "Loading spreadsheets..." 
+                          : spreadsheets.length > 0 
+                            ? "Select spreadsheet" 
+                            : "No spreadsheets found"
+                    } />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="read">Read Data</SelectItem>
-                    <SelectItem value="write">Write Data</SelectItem>
-                    <SelectItem value="append">Append Data</SelectItem>
+                    {spreadsheets.map((sheet) => (
+                      <SelectItem key={sheet.id} value={sheet.id}>
+                        {sheet.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                <div className="text-xs text-muted-foreground mt-1">
+                  Or enter ID manually below if not listed
+                </div>
               </div>
 
               <div>
-                <Label htmlFor="sheets-spreadsheet">Spreadsheet ID</Label>
+                <Label htmlFor="sheets-spreadsheet-id">Spreadsheet ID (Manual)</Label>
                 <Input
-                  id="sheets-spreadsheet"
+                  id="sheets-spreadsheet-id"
                   value={node.data.selectedSpreadsheet || ''}
                   onChange={(e) => handlePropertyChange('selectedSpreadsheet', e.target.value)}
-                  placeholder="Enter spreadsheet ID or leave blank to select from list"
+                  placeholder="Enter spreadsheet ID"
                 />
               </div>
 
@@ -1205,12 +918,29 @@ const WorkflowBuilder = () => {
                 />
               </div>
               
+              <div>
+                <Label htmlFor="sheets-operation">Operation</Label>
+                <Select
+                  value={node.data.operation || 'read'}
+                  onValueChange={(value) => handlePropertyChange('operation', value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="read">Read Data</SelectItem>
+                    <SelectItem value="write">Write Data</SelectItem>
+                    <SelectItem value="append">Append Data</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              
               {node.data.result && (
                 <>
                   <Separator />
                   <div>
                     <Label>Last Execution Result</Label>
-                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-32 overflow-y-auto">
+                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
                       <div className="font-medium mb-1">Operation: {node.data.result.operation}</div>
                       {node.data.result.values && (
                         <div className="text-muted-foreground">
@@ -1362,7 +1092,7 @@ const WorkflowBuilder = () => {
                   <Separator />
                   <div>
                     <Label>Last Execution Result</Label>
-                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-32 overflow-y-auto">
+                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
                       <div className="font-medium mb-1">Model: {node.data.config?.model}</div>
                       <div className="text-muted-foreground">
                         {node.data.result.response || 'No response data'}
@@ -1483,7 +1213,7 @@ const WorkflowBuilder = () => {
                   <Separator />
                   <div>
                     <Label>Last Execution Result</Label>
-                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-32 overflow-y-auto">
+                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
                       <div className="font-medium mb-1">Analysis Complete</div>
                       <div className="text-muted-foreground">
                         {node.data.result.analysis || 'No analysis data'}
@@ -1620,7 +1350,7 @@ const WorkflowBuilder = () => {
                   <Separator />
                   <div>
                     <Label>Last Execution Result</Label>
-                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-32 overflow-y-auto">
+                    <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
                       <div className="font-medium mb-1">Operation: {node.data.config?.operation}</div>
                       {node.data.result.dimensions && (
                         <div className="text-muted-foreground">
@@ -1662,32 +1392,45 @@ const WorkflowBuilder = () => {
     }
 
     return (
-      <div className="w-80 bg-card border-l overflow-y-auto">
-        <div className="p-4">
-          <div className="flex items-center justify-between mb-4">
+      <div className="w-80 bg-card border-l flex flex-col h-full min-h-0 overflow-hidden">
+        {/* Fixed Header */}
+        <div className="p-4 border-b bg-card/95 backdrop-blur sticky top-0 z-10 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-semibold">Node Properties</h3>
-            <Button variant="ghost" size="sm" onClick={onClose}>
+            <Button variant="ghost" size="sm" onClick={onClose} className="hover:bg-destructive/10">
               <X className="h-4 w-4" />
             </Button>
           </div>
           
-          <div className="space-y-4">
-            <div>
-              <Label className="text-sm font-medium text-muted-foreground">Node Type</Label>
-              <Badge variant="secondary" className="ml-2">
+          {/* Node Info Cards */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between p-2 bg-muted/50 rounded">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Type</span>
+              <Badge variant="secondary" className="text-xs">
                 {node.type}
               </Badge>
             </div>
             
-            <div>
-              <Label className="text-sm font-medium text-muted-foreground">Node ID</Label>
-              <div className="text-sm text-muted-foreground mt-1">{node.id}</div>
+            <div className="flex items-center justify-between p-2 bg-muted/50 rounded">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">ID</span>
+              <code className="text-xs bg-background px-2 py-1 rounded font-mono border">
+                {node.id}
+              </code>
             </div>
-            
-            <Separator />
-            
-            <div className="flex justify-between items-center">
-              <Button variant="destructive" size="sm" onClick={deleteNode}>
+          </div>
+        </div>
+        
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto min-h-0 pb-8">
+          <div className="p-4 space-y-6">
+            {/* Action Buttons */}
+            <div className="space-y-2">
+              <Button 
+                variant="destructive" 
+                size="sm" 
+                onClick={deleteNode}
+                className="w-full justify-start"
+              >
                 <Trash2 className="h-4 w-4 mr-2" />
                 Delete Node
               </Button>
@@ -1695,7 +1438,110 @@ const WorkflowBuilder = () => {
             
             <Separator />
             
-            {renderNodeProperties()}
+            {/* Node Properties */}
+            <div className="space-y-4">
+              {renderNodeProperties()}
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Data Flow Sidebar Component
+  const DataFlowSidebar = ({ edge, onClose }) => {
+    const dataFlow = getDataFlow(edge)
+    
+    return (
+      <div className="w-80 bg-card border-l flex flex-col h-full min-h-0 overflow-hidden">
+        {/* Fixed Header */}
+        <div className="p-4 border-b bg-card/95 backdrop-blur sticky top-0 z-10 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold">Data Flow</h3>
+            <Button variant="ghost" size="sm" onClick={onClose} className="hover:bg-destructive/10">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          
+          {/* Edge Info */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between p-2 bg-muted/50 rounded">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">From</span>
+              <Badge variant="secondary" className="text-xs">
+                {dataFlow?.source || edge.source}
+              </Badge>
+            </div>
+            
+            <div className="flex items-center justify-between p-2 bg-muted/50 rounded">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">To</span>
+              <Badge variant="secondary" className="text-xs">
+                {dataFlow?.target || edge.target}
+              </Badge>
+            </div>
+          </div>
+        </div>
+        
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto min-h-0 pb-8">
+          <div className="p-4 space-y-6">
+            {/* Data Format Toggle */}
+            <div className="flex items-center justify-between">
+              <Label className="text-sm font-medium">Data Format</Label>
+              <Select value={dataFormat} onValueChange={setDataFormat}>
+                <SelectTrigger className="w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="json">JSON</SelectItem>
+                  <SelectItem value="table">Table</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <Separator />
+            
+            {/* Data Display */}
+            <div className="space-y-4">
+              {dataFlow ? (
+                dataFormat === 'json' ? (
+                  <div>
+                    <Label className="text-sm font-medium mb-2 block">Data Flow (JSON)</Label>
+                    <pre className="bg-muted p-3 rounded-md text-xs overflow-x-auto max-h-96 overflow-y-auto">
+                      {JSON.stringify(dataFlow, null, 2)}
+                    </pre>
+                  </div>
+                ) : (
+                  <div>
+                    <Label className="text-sm font-medium mb-2 block">Data Flow (Table)</Label>
+                    <div className="border rounded-md overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead className="bg-muted">
+                          <tr>
+                            <th className="p-2 text-left font-medium">Property</th>
+                            <th className="p-2 text-left font-medium">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(dataFlow).map(([key, value]) => (
+                            <tr key={key} className="border-t">
+                              <td className="p-2 font-medium">{key}</td>
+                              <td className="p-2 text-muted-foreground">
+                                {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="text-sm">No data flow available</p>
+                  <p className="text-xs mt-1">Execute the source node to see data flow</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -1794,16 +1640,8 @@ const WorkflowBuilder = () => {
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
-          onNodesChange={(changes) => {
-            onNodesChange(changes)
-            // Sync back to store after ReactFlow updates
-            setTimeout(() => setNodes(rfNodes), 0)
-          }}
-          onEdgesChange={(changes) => {
-            onEdgesChange(changes)
-            // Sync back to store after ReactFlow updates
-            setTimeout(() => setEdges(rfEdges), 0)
-          }}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
           onConnect={(params) => {
             const newEdges = addEdge(params, rfEdges)
             setRfEdges(newEdges)
@@ -1816,6 +1654,9 @@ const WorkflowBuilder = () => {
           onPaneClick={() => {
             setSelectedNode(null)
             setShowPropertiesSidebar(false)
+          }}
+          onEdgeClick={(event, edge) => {
+            setSelectedEdge(edge)
           }}
           nodeTypes={nodeTypes}
           proOptions={proOptions}
@@ -1869,6 +1710,14 @@ const WorkflowBuilder = () => {
         <NodePropertiesSidebar
           node={selectedNode}
           onClose={closePropertiesSidebar}
+        />
+      )}
+
+      {/* Data Flow Sidebar */}
+      {selectedEdge && (
+        <DataFlowSidebar
+          edge={selectedEdge}
+          onClose={() => setSelectedEdge(null)}
         />
       )}
 

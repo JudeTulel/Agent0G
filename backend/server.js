@@ -1035,6 +1035,984 @@ app.post('/api/google-sheets', async (req, res) => {
   }
 });
 
+// ==================== WEB SCRAPING ENDPOINTS ====================
+
+// Google Search endpoint
+app.post('/api/google-search', async (req, res) => {
+  const { query, numResults = 10, language = 'en', region = 'us', safeSearch = 'moderate' } = req.body;
+
+  if (!query) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      details: 'query is required'
+    });
+  }
+
+  console.log(`🔍 Performing Google search: "${query}"`);
+
+  try {
+    // Using Google Custom Search API (requires API key and search engine ID)
+    const apiKey = process.env.GOOGLE_API_KEY;
+    const searchEngineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
+
+    if (!apiKey || !searchEngineId) {
+      throw new Error('Google API credentials not configured. Please set GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID environment variables.');
+    }
+
+    const searchUrl = new URL('https://www.googleapis.com/customsearch/v1');
+    searchUrl.searchParams.set('key', apiKey);
+    searchUrl.searchParams.set('cx', searchEngineId);
+    searchUrl.searchParams.set('q', query);
+    searchUrl.searchParams.set('num', Math.min(numResults, 10).toString());
+    searchUrl.searchParams.set('hl', language);
+    searchUrl.searchParams.set('gl', region);
+    searchUrl.searchParams.set('safe', safeSearch);
+
+    const response = await fetch(searchUrl.toString());
+    
+    if (!response.ok) {
+      throw new Error(`Google Search API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+
+    const results = data.items?.map(item => ({
+      title: item.title,
+      link: item.link,
+      snippet: item.snippet,
+      displayLink: item.displayLink,
+      formattedUrl: item.formattedUrl
+    })) || [];
+
+    console.log(`✅ Found ${results.length} search results`);
+
+    res.json({
+      success: true,
+      query,
+      results,
+      searchInformation: {
+        totalResults: data.searchInformation?.totalResults,
+        searchTime: data.searchInformation?.searchTime
+      },
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Google search failed:', err.message);
+    res.status(500).json({
+      error: 'Google search failed',
+      details: err.message,
+      query
+    });
+  }
+});
+
+// Web Scraper endpoint
+app.post('/api/web-scraper', async (req, res) => {
+  const { 
+    url, 
+    extractionMode = 'text', 
+    selectors, 
+    includeImages = false, 
+    includeLinks = false, 
+    includeMetadata = true,
+    timeout = 30,
+    userAgent = 'default',
+    followRedirects = true
+  } = req.body;
+
+  if (!url) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      details: 'url is required'
+    });
+  }
+
+  console.log(`🕷️ Scraping web page: ${url}`);
+
+  try {
+    // Use Puppeteer 
+    const puppeteer = require('puppeteer');
+    
+    const browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    const page = await browser.newPage();
+
+    // Set user agent
+    const userAgents = {
+      default: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      chrome: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      firefox: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+      safari: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+      mobile: 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+      bot: 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
+    };
+
+    await page.setUserAgent(userAgents[userAgent] || userAgents.default);
+
+    // Set timeout
+    page.setDefaultTimeout(timeout * 1000);
+
+    // Navigate to page
+    await page.goto(url, { 
+      waitUntil: 'networkidle2',
+      timeout: timeout * 1000
+    });
+
+    let extractedData = {};
+
+    // Extract content based on mode
+    if (extractionMode === 'text') {
+      extractedData.content = await page.evaluate(() => {
+        // Remove script and style elements
+        const scripts = document.querySelectorAll('script, style');
+        scripts.forEach(el => el.remove());
+        return document.body.innerText;
+      });
+    } else if (extractionMode === 'markdown') {
+      // Convert HTML to markdown (basic implementation)
+      extractedData.content = await page.evaluate(() => {
+        const content = document.querySelector('main, article, .content, #content, .post, .entry') || document.body;
+        return content.innerText;
+      });
+    } else if (extractionMode === 'html') {
+      extractedData.content = await page.content();
+    } else if (extractionMode === 'structured') {
+      extractedData.content = await page.evaluate(() => {
+        const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6')).map(h => ({
+          tag: h.tagName.toLowerCase(),
+          text: h.innerText
+        }));
+        
+        const paragraphs = Array.from(document.querySelectorAll('p')).map(p => p.innerText);
+        
+        return { headings, paragraphs };
+      });
+    } else if (extractionMode === 'custom' && selectors) {
+      extractedData.content = await page.evaluate((sel) => {
+        const elements = document.querySelectorAll(sel);
+        return Array.from(elements).map(el => el.innerText);
+      }, selectors);
+    }
+
+    // Extract metadata
+    if (includeMetadata) {
+      extractedData.metadata = await page.evaluate(() => ({
+        title: document.title,
+        description: document.querySelector('meta[name="description"]')?.getAttribute('content'),
+        keywords: document.querySelector('meta[name="keywords"]')?.getAttribute('content'),
+        author: document.querySelector('meta[name="author"]')?.getAttribute('content'),
+        ogTitle: document.querySelector('meta[property="og:title"]')?.getAttribute('content'),
+        ogDescription: document.querySelector('meta[property="og:description"]')?.getAttribute('content')
+      }));
+    }
+
+    // Extract images
+    if (includeImages) {
+      extractedData.images = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('img')).map(img => ({
+          src: img.src,
+          alt: img.alt,
+          title: img.title
+        }));
+      });
+    }
+
+    // Extract links
+    if (includeLinks) {
+      extractedData.links = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('a[href]')).map(link => ({
+          href: link.href,
+          text: link.innerText,
+          title: link.title
+        }));
+      });
+    }
+
+    await browser.close();
+
+    console.log(`✅ Successfully scraped content from ${url}`);
+
+    res.json({
+      success: true,
+      url,
+      data: extractedData,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Web scraping failed:', err.message);
+    res.status(500).json({
+      error: 'Web scraping failed',
+      details: err.message,
+      url
+    });
+  }
+});
+
+// Data Formatter endpoint
+app.post('/api/data-formatter', async (req, res) => {
+  const { 
+    data, 
+    promptTemplate, 
+    formatType = 'research',
+    includeMetadata = true,
+    includeUrls = true,
+    cleanText = true,
+    maxLength = 'auto'
+  } = req.body;
+
+  if (!data || !promptTemplate) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      details: 'data and promptTemplate are required'
+    });
+  }
+
+  console.log(`📝 Formatting data with template type: ${formatType}`);
+
+  try {
+    let formattedData = [];
+
+    // Process each data item
+    if (Array.isArray(data)) {
+      formattedData = data.map(item => formatSingleItem(item, promptTemplate, {
+        includeMetadata,
+        includeUrls,
+        cleanText,
+        maxLength
+      }));
+    } else {
+      formattedData = [formatSingleItem(data, promptTemplate, {
+        includeMetadata,
+        includeUrls,
+        cleanText,
+        maxLength
+      })];
+    }
+
+    console.log(`✅ Formatted ${formattedData.length} data items`);
+
+    res.json({
+      success: true,
+      formattedData,
+      count: formattedData.length,
+      formatType,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Data formatting failed:', err.message);
+    res.status(500).json({
+      error: 'Data formatting failed',
+      details: err.message
+    });
+  }
+});
+
+// Helper function for data formatting
+function formatSingleItem(item, template, options) {
+  let formatted = template;
+
+  // Replace template variables
+  const replacements = {
+    '{{title}}': item.metadata?.title || item.title || 'Untitled',
+    '{{url}}': item.url || item.link || '',
+    '{{content}}': item.content || item.snippet || '',
+    '{{description}}': item.metadata?.description || item.snippet || '',
+    '{{keywords}}': item.metadata?.keywords || '',
+    '{{author}}': item.metadata?.author || '',
+    '{{date}}': new Date().toLocaleDateString()
+  };
+
+  // Apply text cleaning if requested
+  if (options.cleanText && replacements['{{content}}']) {
+    replacements['{{content}}'] = replacements['{{content}}']
+      .replace(/\s+/g, ' ')
+      .replace(/\n\n+/g, '\n\n')
+      .trim();
+  }
+
+  // Apply length limits
+  if (options.maxLength !== 'auto' && options.maxLength !== 'full') {
+    const limits = {
+      short: 1000,
+      medium: 2500,
+      long: 5000
+    };
+    
+    const limit = limits[options.maxLength] || 2500;
+    if (replacements['{{content}}'] && replacements['{{content}}'].length > limit) {
+      replacements['{{content}}'] = replacements['{{content}}'].substring(0, limit) + '...';
+    }
+  }
+
+  // Replace all template variables
+  for (const [variable, value] of Object.entries(replacements)) {
+    formatted = formatted.replace(new RegExp(variable.replace(/[{}]/g, '\\$&'), 'g'), value || '');
+  }
+
+  return formatted;
+}
+
+// Markdown Generator endpoint
+app.post('/api/markdown-generator', async (req, res) => {
+  const { 
+    data, 
+    fileName = 'research-report',
+    includeTimestamp = true,
+    includeToC = true,
+    includeMetadata = true,
+    templateStyle = 'professional',
+    headerTemplate,
+    footerTemplate
+  } = req.body;
+
+  if (!data) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      details: 'data is required'
+    });
+  }
+
+  console.log(`📄 Generating markdown report: ${fileName}`);
+
+  try {
+    let markdown = '';
+    const timestamp = new Date();
+    const dateStr = timestamp.toLocaleDateString();
+    const timestampStr = timestamp.toISOString();
+
+    // Generate header
+    if (headerTemplate) {
+      markdown += headerTemplate
+        .replace(/{{date}}/g, dateStr)
+        .replace(/{{timestamp}}/g, timestampStr)
+        .replace(/{{query}}/g, data.query || 'Research Query')
+        .replace(/{{sourceCount}}/g, Array.isArray(data.results) ? data.results.length : '1');
+    }
+
+    // Generate table of contents if requested
+    if (includeToC && Array.isArray(data.results) && data.results.length > 1) {
+      markdown += '\n## Table of Contents\n\n';
+      data.results.forEach((item, index) => {
+        const title = item.title || item.metadata?.title || `Source ${index + 1}`;
+        const anchor = title.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+        markdown += `${index + 1}. [${title}](#${anchor})\n`;
+      });
+      markdown += '\n---\n\n';
+    }
+
+    // Generate main content
+    if (Array.isArray(data.results)) {
+      data.results.forEach((item, index) => {
+        const title = item.title || item.metadata?.title || `Source ${index + 1}`;
+        markdown += `## ${title}\n\n`;
+        
+        if (includeMetadata && item.url) {
+          markdown += `**Source:** [${item.url}](${item.url})\n\n`;
+        }
+        
+        if (item.content) {
+          markdown += `${item.content}\n\n`;
+        }
+        
+        if (index < data.results.length - 1) {
+          markdown += '---\n\n';
+        }
+      });
+    } else {
+      // Single item
+      if (data.title) {
+        markdown += `## ${data.title}\n\n`;
+      }
+      if (includeMetadata && data.url) {
+        markdown += `**Source:** [${data.url}](${data.url})\n\n`;
+      }
+      if (data.content) {
+        markdown += `${data.content}\n\n`;
+      }
+    }
+
+    // Generate footer
+    if (footerTemplate) {
+      markdown += footerTemplate
+        .replace(/{{timestamp}}/g, timestampStr)
+        .replace(/{{date}}/g, dateStr);
+    }
+
+    const fileNameWithExt = fileName.endsWith('.md') ? fileName : `${fileName}.md`;
+
+    console.log(`✅ Generated markdown report: ${fileNameWithExt}`);
+
+    res.json({
+      success: true,
+      fileName: fileNameWithExt,
+      content: markdown,
+      contentLength: markdown.length,
+      timestamp: timestampStr
+    });
+
+  } catch (err) {
+    console.error('❌ Markdown generation failed:', err.message);
+    res.status(500).json({
+      error: 'Markdown generation failed',
+      details: err.message
+    });
+  }
+});
+
+// ==================== WORKFLOW EXECUTION ENDPOINT ====================
+
+// Execute workflow with support for web scraping nodes
+app.post('/api/execute-workflow', requireBroker, async (req, res) => {
+  const { nodes, edges, userAddress, providerAddress } = req.body;
+
+  if (!nodes || !edges || !userAddress) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      details: 'nodes, edges, and userAddress are required'
+    });
+  }
+
+  console.log(`🔄 Executing workflow with ${nodes.length} nodes and ${edges.length} edges`);
+
+  try {
+    const workflowResults = {
+      startTime: new Date().toISOString(),
+      nodeResults: {},
+      executionOrder: [],
+      status: 'running'
+    };
+
+    // Simple execution: process nodes in topological order
+    const processedNodes = new Set();
+    const nodeResults = {};
+
+    // Helper function to check if all dependencies are satisfied
+    const canExecuteNode = (nodeId) => {
+      const incomingEdges = edges.filter(edge => edge.target === nodeId);
+      return incomingEdges.every(edge => processedNodes.has(edge.source));
+    };
+
+    // Helper function to execute a single node
+    const executeNode = async (node) => {
+      console.log(`🔄 Executing node: ${node.id} (${node.type})`);
+      workflowResults.executionOrder.push(node.id);
+
+      try {
+        let result = null;
+
+        switch (node.type) {
+          case 'googleSearch':
+            const searchQuery = node.data.query || 'default search';
+            const numResults = node.data.numResults || 5;
+            
+            const searchResponse = await fetch(`${req.protocol}://${req.get('host')}/api/google-search`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                query: searchQuery, 
+                numResults,
+                language: node.data.language || 'en',
+                region: node.data.region || 'us',
+                safeSearch: node.data.safeSearch || 'moderate'
+              })
+            });
+
+            if (searchResponse.ok) {
+              result = await searchResponse.json();
+            } else {
+              throw new Error(`Google search failed: ${searchResponse.statusText}`);
+            }
+            break;
+
+          case 'webScraper':
+            // Get URLs from previous Google Search node
+            const searchNode = nodes.find(n => n.type === 'googleSearch');
+            const searchResults = nodeResults[searchNode?.id]?.results || [];
+            
+            if (searchResults.length === 0) {
+              throw new Error('No URLs to scrape - Google Search node must run first');
+            }
+
+            const scrapePromises = searchResults.slice(0, 3).map(async (searchResult) => {
+              try {
+                const scrapeResponse = await fetch(`${req.protocol}://${req.get('host')}/api/web-scraper`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    url: searchResult.link,
+                    extractionMode: node.data.extractionMode || 'text',
+                    includeMetadata: node.data.includeMetadata || true,
+                    timeout: Array.isArray(node.data.timeout) ? node.data.timeout[0] : (node.data.timeout || 30)
+                  })
+                });
+
+                if (scrapeResponse.ok) {
+                  const scrapeData = await scrapeResponse.json();
+                  return {
+                    ...searchResult,
+                    scrapedData: scrapeData.data
+                  };
+                } else {
+                  console.warn(`Failed to scrape ${searchResult.link}`);
+                  return {
+                    ...searchResult,
+                    scrapedData: { content: searchResult.snippet || '' }
+                  };
+                }
+              } catch (err) {
+                console.warn(`Error scraping ${searchResult.link}:`, err.message);
+                return {
+                  ...searchResult,
+                  scrapedData: { content: searchResult.snippet || '' }
+                };
+              }
+            });
+
+            const scrapedResults = await Promise.all(scrapePromises);
+            result = { scrapedData: scrapedResults };
+            break;
+
+          case 'dataFormatter':
+            // Get data from previous web scraper node
+            const scraperNode = nodes.find(n => n.type === 'webScraper');
+            const scrapedData = nodeResults[scraperNode?.id]?.scrapedData || [];
+
+            const formatResponse = await fetch(`${req.protocol}://${req.get('host')}/api/data-formatter`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                data: scrapedData,
+                promptTemplate: node.data.promptTemplate || 'Summarize: {{content}}',
+                formatType: node.data.formatType || 'research',
+                includeMetadata: node.data.includeMetadata !== false,
+                includeUrls: node.data.includeUrls !== false,
+                cleanText: node.data.cleanText !== false,
+                maxLength: node.data.maxLength || 'auto'
+              })
+            });
+
+            if (formatResponse.ok) {
+              result = await formatResponse.json();
+            } else {
+              throw new Error(`Data formatting failed: ${formatResponse.statusText}`);
+            }
+            break;
+
+          case 'ai':
+            // Get formatted data from previous formatter node
+            const formatterNode = nodes.find(n => n.type === 'dataFormatter');
+            const formattedData = nodeResults[formatterNode?.id]?.formattedData || [];
+
+            if (!providerAddress) {
+              throw new Error('Provider address required for AI node execution');
+            }
+
+            const combinedPrompt = formattedData.join('\n\n---\n\n');
+
+            const aiResponse = await fetch(`${req.protocol}://${req.get('host')}/api/inference`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                providerAddress,
+                prompt: combinedPrompt,
+                userAddress
+              })
+            });
+
+            if (aiResponse.ok) {
+              result = await aiResponse.json();
+            } else {
+              throw new Error(`AI inference failed: ${aiResponse.statusText}`);
+            }
+            break;
+
+          case 'markdownGenerator':
+            // Get AI analysis from previous AI node
+            const aiNode = nodes.find(n => n.type === 'ai');
+            const aiAnalysis = nodeResults[aiNode?.id]?.response || 'No analysis available';
+
+            // Get original search query
+            const originalSearchNode = nodes.find(n => n.type === 'googleSearch');
+            const searchQuery2 = originalSearchNode?.data?.query || 'Research Query';
+
+            const markdownResponse = await fetch(`${req.protocol}://${req.get('host')}/api/markdown-generator`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                data: {
+                  query: searchQuery2,
+                  analysis: aiAnalysis,
+                  results: nodeResults[nodes.find(n => n.type === 'webScraper')?.id]?.scrapedData || []
+                },
+                fileName: node.data.fileName || 'workflow-report',
+                includeTimestamp: node.data.includeTimestamp !== false,
+                includeToC: node.data.includeToC !== false,
+                includeMetadata: node.data.includeMetadata !== false,
+                templateStyle: node.data.templateStyle || 'professional',
+                headerTemplate: node.data.headerTemplate,
+                footerTemplate: node.data.footerTemplate
+              })
+            });
+
+            if (markdownResponse.ok) {
+              result = await markdownResponse.json();
+            } else {
+              throw new Error(`Markdown generation failed: ${markdownResponse.statusText}`);
+            }
+            break;
+
+          default:
+            console.warn(`Unknown node type: ${node.type}`);
+            result = { message: `Node type ${node.type} not implemented` };
+        }
+
+        nodeResults[node.id] = result;
+        workflowResults.nodeResults[node.id] = {
+          nodeType: node.type,
+          status: 'completed',
+          result,
+          timestamp: new Date().toISOString()
+        };
+
+        console.log(`✅ Node ${node.id} completed successfully`);
+        return true;
+
+      } catch (error) {
+        console.error(`❌ Node ${node.id} failed:`, error.message);
+        workflowResults.nodeResults[node.id] = {
+          nodeType: node.type,
+          status: 'failed',
+          error: error.message,
+          timestamp: new Date().toISOString()
+        };
+        throw error;
+      }
+    };
+
+    // Execute nodes in dependency order
+    while (processedNodes.size < nodes.length) {
+      const readyNodes = nodes.filter(node => 
+        !processedNodes.has(node.id) && canExecuteNode(node.id)
+      );
+
+      if (readyNodes.length === 0) {
+        throw new Error('Workflow has circular dependencies or no ready nodes');
+      }
+
+      // Execute ready nodes (could be done in parallel, but sequential for now)
+      for (const node of readyNodes) {
+        await executeNode(node);
+        processedNodes.add(node.id);
+      }
+    }
+
+    workflowResults.endTime = new Date().toISOString();
+    workflowResults.status = 'completed';
+
+    // If there's a markdown generator, provide download link
+    const markdownNode = nodes.find(n => n.type === 'markdownGenerator');
+    if (markdownNode && workflowResults.nodeResults[markdownNode.id]?.result?.content) {
+      const content = workflowResults.nodeResults[markdownNode.id].result.content;
+      const fileName = workflowResults.nodeResults[markdownNode.id].result.fileName || 'report.md';
+      workflowResults.downloadUrl = `/api/download-report/${Buffer.from(content).toString('base64')}/${fileName}`;
+    }
+
+    console.log(`✅ Workflow execution completed successfully`);
+
+    res.json({
+      success: true,
+      workflow: workflowResults
+    });
+
+  } catch (err) {
+    console.error('❌ Workflow execution failed:', err.message);
+    res.status(500).json({
+      error: 'Workflow execution failed',
+      details: err.message
+    });
+  }
+});
+
+// Execute complete web scraping research workflow (kept for compatibility)
+app.post('/api/execute-research-workflow', async (req, res) => {
+  const { query, userAddress, providerAddress, numResults = 5 } = req.body;
+
+  if (!query || !userAddress || !providerAddress) {
+    return res.status(400).json({
+      error: 'Missing required parameters',
+      details: 'query, userAddress, and providerAddress are required'
+    });
+  }
+
+  console.log(`🔬 Executing research workflow for query: "${query}"`);
+
+  try {
+    const workflowResults = {
+      query,
+      startTime: new Date().toISOString(),
+      steps: []
+    };
+
+    // Step 1: Google Search
+    console.log('🔍 Step 1: Performing Google search...');
+    const searchResponse = await fetch(`${req.protocol}://${req.get('host')}/api/google-search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, numResults })
+    });
+
+    if (!searchResponse.ok) {
+      throw new Error(`Google search failed: ${searchResponse.statusText}`);
+    }
+
+    const searchData = await searchResponse.json();
+    workflowResults.steps.push({
+      step: 1,
+      name: 'Google Search',
+      status: 'completed',
+      data: searchData,
+      timestamp: new Date().toISOString()
+    });
+
+    console.log(`✅ Found ${searchData.results?.length || 0} search results`);
+
+    // Step 2: Web Scraping (process first few results)
+    console.log('🕷️ Step 2: Scraping web pages...');
+    const scrapePromises = searchData.results?.slice(0, Math.min(numResults, 3)).map(async (result, index) => {
+      try {
+        const scrapeResponse = await fetch(`${req.protocol}://${req.get('host')}/api/web-scraper`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            url: result.link,
+            extractionMode: 'text',
+            includeMetadata: true,
+            timeout: 20
+          })
+        });
+
+        if (scrapeResponse.ok) {
+          const scrapeData = await scrapeResponse.json();
+          return {
+            ...result,
+            scrapedContent: scrapeData.data
+          };
+        } else {
+          console.warn(`Failed to scrape ${result.link}: ${scrapeResponse.statusText}`);
+          return {
+            ...result,
+            scrapedContent: { content: result.snippet }
+          };
+        }
+      } catch (err) {
+        console.warn(`Error scraping ${result.link}:`, err.message);
+        return {
+          ...result,
+          scrapedContent: { content: result.snippet }
+        };
+      }
+    }) || [];
+
+    const scrapedResults = await Promise.all(scrapePromises);
+    workflowResults.steps.push({
+      step: 2,
+      name: 'Web Scraping',
+      status: 'completed',
+      data: { results: scrapedResults },
+      timestamp: new Date().toISOString()
+    });
+
+    console.log(`✅ Scraped ${scrapedResults.length} web pages`);
+
+    // Step 3: Data Formatting
+    console.log('📝 Step 3: Formatting data for AI analysis...');
+    const formatResponse = await fetch(`${req.protocol}://${req.get('host')}/api/data-formatter`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: scrapedResults,
+        promptTemplate: `Analyze and summarize the following research data about "${query}":
+
+Title: {{title}}
+Source: {{url}}
+Content: {{content}}
+
+Please provide:
+1. Key insights and findings related to "${query}"
+2. Main topics and themes covered
+3. Important facts, statistics, or data points
+4. Notable quotes or expert opinions
+5. How this information relates to the research query
+
+Format your response as a clear, structured analysis.`,
+        formatType: 'research',
+        includeMetadata: true,
+        includeUrls: true,
+        cleanText: true,
+        maxLength: 'medium'
+      })
+    });
+
+    if (!formatResponse.ok) {
+      throw new Error(`Data formatting failed: ${formatResponse.statusText}`);
+    }
+
+    const formatData = await formatResponse.json();
+    workflowResults.steps.push({
+      step: 3,
+      name: 'Data Formatting',
+      status: 'completed',
+      data: formatData,
+      timestamp: new Date().toISOString()
+    });
+
+    console.log(`✅ Formatted ${formatData.formattedData?.length || 0} data items`);
+
+    // Step 4: AI Analysis
+    console.log('🤖 Step 4: AI analysis and summarization...');
+    const combinedPrompt = `Research Query: "${query}"
+
+Please analyze the following research data and create a comprehensive summary:
+
+${formatData.formattedData?.join('\n\n---\n\n') || ''}
+
+Based on this research, please provide:
+
+1. **Executive Summary**: A brief overview of key findings about "${query}"
+2. **Main Insights**: The most important discoveries and insights
+3. **Key Facts & Statistics**: Important data points and statistics found
+4. **Different Perspectives**: Various viewpoints or approaches mentioned
+5. **Conclusions**: Your analysis and conclusions about "${query}"
+6. **Recommendations**: Practical recommendations or next steps
+
+Format your response in clear, well-structured markdown with appropriate headings and bullet points.`;
+
+    const aiResponse = await fetch(`${req.protocol}://${req.get('host')}/api/inference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        providerAddress,
+        prompt: combinedPrompt,
+        userAddress
+      })
+    });
+
+    if (!aiResponse.ok) {
+      throw new Error(`AI analysis failed: ${aiResponse.statusText}`);
+    }
+
+    const aiData = await aiResponse.json();
+    workflowResults.steps.push({
+      step: 4,
+      name: 'AI Analysis',
+      status: 'completed',
+      data: aiData,
+      timestamp: new Date().toISOString()
+    });
+
+    console.log(`✅ AI analysis completed (${aiData.response?.length || 0} characters)`);
+
+    // Step 5: Markdown Generation
+    console.log('📄 Step 5: Generating markdown report...');
+    const markdownResponse = await fetch(`${req.protocol}://${req.get('host')}/api/markdown-generator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: {
+          query,
+          results: scrapedResults,
+          analysis: aiData.response
+        },
+        fileName: `research-${query.replace(/[^a-z0-9]/gi, '-').toLowerCase()}`,
+        includeTimestamp: true,
+        includeToC: true,
+        includeMetadata: true,
+        templateStyle: 'professional',
+        headerTemplate: `# Research Report: ${query}
+
+**Generated on:** {{date}}  
+**Research Query:** "${query}"  
+**Sources Analyzed:** {{sourceCount}} websites  
+**Analysis Provider:** AI-powered research assistant  
+
+---
+
+## Executive Summary
+
+${aiData.response}
+
+## Detailed Analysis
+
+`,
+        footerTemplate: `
+
+## Sources
+
+${scrapedResults.map((result, index) => `${index + 1}. [${result.title}](${result.link})`).join('\n')}
+
+---
+
+*This research report was automatically generated by Agent0G Web Research Platform*  
+*Generated on: {{timestamp}}*  
+*Query: "${query}"*`
+      })
+    });
+
+    if (!markdownResponse.ok) {
+      throw new Error(`Markdown generation failed: ${markdownResponse.statusText}`);
+    }
+
+    const markdownData = await markdownResponse.json();
+    workflowResults.steps.push({
+      step: 5,
+      name: 'Markdown Generation',
+      status: 'completed',
+      data: markdownData,
+      timestamp: new Date().toISOString()
+    });
+
+    workflowResults.endTime = new Date().toISOString();
+    workflowResults.status = 'completed';
+    workflowResults.finalReport = markdownData;
+
+    console.log(`✅ Research workflow completed successfully for query: "${query}"`);
+
+    res.json({
+      success: true,
+      workflow: workflowResults,
+      downloadUrl: `/api/download-report/${Buffer.from(markdownData.content).toString('base64')}/${markdownData.fileName}`
+    });
+
+  } catch (err) {
+    console.error('❌ Research workflow failed:', err.message);
+    res.status(500).json({
+      error: 'Research workflow failed',
+      details: err.message,
+      query
+    });
+  }
+});
+
+// Download generated report
+app.get('/api/download-report/:content/:filename', (req, res) => {
+  try {
+    const { content, filename } = req.params;
+    const decodedContent = Buffer.from(content, 'base64').toString('utf-8');
+    
+    res.setHeader('Content-Type', 'text/markdown');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(decodedContent);
+  } catch (err) {
+    res.status(400).json({ error: 'Invalid download request' });
+  }
+});
+
 // ==================== ERROR HANDLING ====================
 
 app.use((err, req, res) => {

@@ -11,14 +11,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-
-import Header from './components/Header'
-import AgentCard from './components/AgentCard'
-import CategoryCard from './components/CategoryCard'
-import WorkflowPage from './pages/WorkflowPage'
-
-import { categories, featuredAgents, allAgents, userStats } from './data/mockData'
-
 import { 
   Search, 
   Filter,
@@ -32,6 +24,11 @@ import {
   Wrench
 } from 'lucide-react'
 
+import Header from './components/Header'
+import AgentCard from './components/AgentCard'
+import CategoryCard from './components/CategoryCard'
+import WorkflowPage from './pages/WorkflowPage'
+import { categories, featuredAgents, allAgents, userStats } from './data/mockData'
 import './App.css'
 
 function App() {
@@ -313,7 +310,7 @@ function App() {
                     <SelectItem value="free">Free</SelectItem>
                     <SelectItem value="low">Low (≤0.05 ETH)</SelectItem>
                     <SelectItem value="medium">Medium (0.05-0.1 ETH)</SelectItem>
-                    <SelectItem value="high">High ({'>'}0.1 ETH)</SelectItem>
+                    <SelectItem value="high">High (&gt;0.1 ETH)</SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -374,4 +371,3 @@ function App() {
 }
 
 export default App
-

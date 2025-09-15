@@ -133,7 +133,7 @@ const useWorkflowStore = create(
         },
 
         // Workflow execution
-        runWorkflow: async () => {
+        runWorkflow: async (userAddress, providerAddress) => {
           const { nodes, setIsRunning, setNodes } = get();
           setIsRunning(true);
 
