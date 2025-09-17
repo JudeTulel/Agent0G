@@ -13,24 +13,24 @@ export const ogChain = {
   },
   rpcUrls: {
     default: {
-      http: ['https://evmrpc.0g.ai'],
+      http: ['https://rpc-zero-gravity-mainnet.0g.ai'],
     },
   },
   blockExplorers: {
     default: {
       name: '0G Explorer',
-      url: 'https://explorer.0g.ai',
+      url: 'https://scan.0g.ai',
     },
   },
 }
 
 export const ogTestnet = {
-  id: 9000,
-  name: '0G Testnet',
+  id: 16601,
+  name: '0G-Galileo-Testnet',
   nativeCurrency: {
     decimals: 18,
-    name: 'Ether',
-    symbol: 'ETH',
+    name: 'OG',
+    symbol: 'OG',
   },
   rpcUrls: {
     default: {
@@ -39,8 +39,8 @@ export const ogTestnet = {
   },
   blockExplorers: {
     default: {
-      name: '0G Testnet Explorer',
-      url: 'https://explorer-testnet.0g.ai',
+      name: '0G Galileo Explorer',
+      url: 'https://chainscan-galileo.0g.ai',
     },
   },
 }

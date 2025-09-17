@@ -22,7 +22,6 @@ const WorkflowPage = ({ onBack }) => {
 
   return (
     <div className="min-h-screen bg-background">
-      <Header />
       
       {/* Workflow Header */}
       <div className="border-b bg-card">

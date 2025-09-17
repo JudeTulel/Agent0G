@@ -351,6 +351,71 @@ const useWorkflowStore = create(
           }
         },
 
+        mintWorkflow: async (agentData) => {
+          const { nodes, edges } = get();
+          const workflow = {
+            nodes,
+            edges,
+            metadata: {
+              name: agentData.name,
+              description: agentData.description,
+              version: '1.0.0',
+              createdAt: new Date().toISOString()
+            }
+          };
+
+          try {
+            // First save to storage to get the hash
+            const workflowBlob = new Blob([JSON.stringify(workflow, null, 2)], {
+              type: 'application/json'
+            });
+
+            const formData = new FormData();
+            formData.append('file', workflowBlob, `workflow-${Date.now()}.json`);
+
+            const storageResponse = await fetch('http://localhost:3001/api/storage/upload', {
+              method: 'POST',
+              body: formData
+            });
+
+            if (!storageResponse.ok) {
+              throw new Error('Failed to save workflow to storage');
+            }
+
+            const storageResult = await storageResponse.json();
+            const workflowHash = storageResult.rootHash;
+
+            // Now register the agent on the contract
+            const registerResponse = await fetch('http://localhost:3001/api/contracts/agents', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                name: agentData.name,
+                description: agentData.description,
+                category: agentData.category,
+                workflowHash: workflowHash,
+                pricePerUse: agentData.pricePerUse || 0,
+                subscriptionPrice: agentData.subscriptionPrice || 0
+              })
+            });
+
+            if (registerResponse.ok) {
+              const result = await registerResponse.json();
+              console.log('Agent registered:', result);
+              alert(`Agent registered successfully!\nAgent ID: ${result.agentId}\nTX: ${result.txHash}`);
+            } else {
+              const errorText = await registerResponse.text();
+              console.error('Failed to register agent:', registerResponse.statusText, errorText);
+              alert('Failed to register agent on contract');
+            }
+          } catch (error) {
+            console.error('Error minting workflow:', error);
+            alert('Error registering agent');
+          }
+        },
+
         // Data flow state
         nodeData: {}, // Store data output from each node
         dataFlow: {}, // Store data flow between connected nodes

@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react'
-import { useAccount } from 'wagmi'
+import { useAccount, useWriteContract, useChainId } from 'wagmi'
 import HttpRequestNode from './nodes/HttpRequestNode';
 import GoogleSheetsNode from './nodes/GoogleSheetsNode';
 import {
@@ -32,6 +32,7 @@ import LogicNode from './nodes/LogicNode'
 import WorkflowSetupModal from './WorkflowSetupModal'
 
 import useWorkflowStore from '../stores/workflowStore'
+import { CONTRACT_ADDRESSES, AGENT_REGISTRY_ABI } from '../lib/blockchain'
 
 import {
   Play,
@@ -44,7 +45,8 @@ import {
   Trash2,
   Copy,
   X,
-  RefreshCw
+  RefreshCw,
+  Coins
 } from 'lucide-react'
 
 // Define nodeTypes outside component to prevent recreation on every render
@@ -105,6 +107,8 @@ const nodeCategories = [
 
 const WorkflowBuilder = () => {
   const { address, isConnected } = useAccount()
+  const chainId = useChainId()
+  const { writeContract } = useWriteContract()
 
   // Use Zustand store for state management
   const store = useWorkflowStore()
@@ -133,6 +137,7 @@ const WorkflowBuilder = () => {
 
   // Modal state
   const [showSetupModal, setShowSetupModal] = useState(false)
+  const [showMintModal, setShowMintModal] = useState(false)
 
   // ReactFlow state management
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(nodes)
@@ -186,6 +191,51 @@ const WorkflowBuilder = () => {
       setSpreadsheets([])
     } finally {
       setLoadingSpreadsheets(false)
+    }
+  }
+
+  // Function to mint workflow as NFT
+  const mintWorkflow = async (agentData) => {
+    if (!isConnected) {
+      alert('Please connect your wallet first')
+      return
+    }
+
+    if (!chainId || !CONTRACT_ADDRESSES[chainId]) {
+      alert('Unsupported network. Please switch to 0G chain.')
+      return
+    }
+
+    try {
+      const contractAddress = CONTRACT_ADDRESSES[chainId].AgentRegistry
+      
+      // Convert price to wei (assuming ETH/OG)
+      const pricePerUseWei = BigInt(Math.floor(parseFloat(agentData.pricePerUse || '0') * 1e18))
+      const subscriptionPriceWei = BigInt(Math.floor(parseFloat(agentData.subscriptionPrice || '0') * 1e18))
+      
+      // Create a workflow hash from the current workflow data
+      const workflowData = JSON.stringify({ nodes, edges })
+      const workflowHash = btoa(workflowData) // Simple base64 encoding as hash
+      
+      await writeContract({
+        address: contractAddress,
+        abi: AGENT_REGISTRY_ABI,
+        functionName: 'registerAgent',
+        args: [
+          agentData.name || 'Untitled Workflow',
+          agentData.description || 'No description provided',
+          agentData.category || 'General',
+          workflowHash,
+          pricePerUseWei,
+          subscriptionPriceWei
+        ]
+      })
+
+      alert('Workflow minted successfully!')
+      setShowMintModal(false)
+    } catch (error) {
+      console.error('Error minting workflow:', error)
+      alert('Failed to mint workflow. Please try again.')
     }
   }
 
@@ -1393,7 +1443,6 @@ const WorkflowBuilder = () => {
 
     return (
       <div className="w-80 bg-card border-l flex flex-col h-full min-h-0 overflow-hidden">
-        {/* Fixed Header */}
         <div className="p-4 border-b bg-card/95 backdrop-blur sticky top-0 z-10 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-semibold">Node Properties</h3>
@@ -1553,8 +1602,6 @@ const WorkflowBuilder = () => {
       {/* Left Sidebar */}
       <div className="w-80 bg-card border-r overflow-y-auto">
         <div className="p-4">
-          <h2 className="text-xl font-bold mb-4">Workflow Builder</h2>
-          
           {/* Controls */}
           <div className="space-y-2 mb-6">
             <Button 
@@ -1576,10 +1623,14 @@ const WorkflowBuilder = () => {
               {isRunning ? 'Running...' : !isConnected ? 'Connect Wallet to Run' : 'Run Workflow'}
             </Button>
             
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <Button variant="outline" size="sm" onClick={saveWorkflow}>
                 <Save className="h-4 w-4 mr-1" />
                 Save
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setShowMintModal(true)}>
+                <Coins className="h-4 w-4 mr-1" />
+                Mint Agent
               </Button>
               <Button variant="outline" size="sm">
                 <Upload className="h-4 w-4 mr-1" />
@@ -1732,9 +1783,124 @@ const WorkflowBuilder = () => {
         }}
         onCreateWorkflow={handleCreateWorkflow}
       />
+
+      {/* Mint Agent Modal */}
+      <MintModal
+        isOpen={showMintModal}
+        onClose={() => setShowMintModal(false)}
+        onMint={mintWorkflow}
+      />
     </div>
   )
 }
 
 export default WorkflowBuilder
+
+// Mint Agent Modal Component
+const MintModal = ({ isOpen, onClose, onMint }) => {
+  const [agentData, setAgentData] = useState({
+    name: '',
+    description: '',
+    category: 'automation',
+    pricePerUse: 0,
+    subscriptionPrice: 0
+  })
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    onMint(agentData)
+    onClose()
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-bold">Mint Agent</h2>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <Label htmlFor="agent-name">Agent Name</Label>
+            <Input
+              id="agent-name"
+              value={agentData.name}
+              onChange={(e) => setAgentData({...agentData, name: e.target.value})}
+              placeholder="Enter agent name"
+              required
+            />
+          </div>
+          
+          <div>
+            <Label htmlFor="agent-description">Description</Label>
+            <Textarea
+              id="agent-description"
+              value={agentData.description}
+              onChange={(e) => setAgentData({...agentData, description: e.target.value})}
+              placeholder="Describe what your agent does"
+              required
+            />
+          </div>
+          
+          <div>
+            <Label htmlFor="agent-category">Category</Label>
+            <Select
+              value={agentData.category}
+              onValueChange={(value) => setAgentData({...agentData, category: value})}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="automation">Automation</SelectItem>
+                <SelectItem value="data-processing">Data Processing</SelectItem>
+                <SelectItem value="ai-assistant">AI Assistant</SelectItem>
+                <SelectItem value="web-scraping">Web Scraping</SelectItem>
+                <SelectItem value="analytics">Analytics</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          
+          <div>
+            <Label htmlFor="price-per-use">Price Per Use (ETH)</Label>
+            <Input
+              id="price-per-use"
+              type="number"
+              step="0.001"
+              value={agentData.pricePerUse}
+              onChange={(e) => setAgentData({...agentData, pricePerUse: parseFloat(e.target.value) || 0})}
+              placeholder="0.01"
+            />
+          </div>
+          
+          <div>
+            <Label htmlFor="subscription-price">Subscription Price (ETH/month)</Label>
+            <Input
+              id="subscription-price"
+              type="number"
+              step="0.001"
+              value={agentData.subscriptionPrice}
+              onChange={(e) => setAgentData({...agentData, subscriptionPrice: parseFloat(e.target.value) || 0})}
+              placeholder="0.1"
+            />
+          </div>
+          
+          <div className="flex gap-2 pt-4">
+            <Button type="button" variant="outline" onClick={onClose} className="flex-1">
+              Cancel
+            </Button>
+            <Button type="submit" className="flex-1">
+              Mint Agent
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
 
