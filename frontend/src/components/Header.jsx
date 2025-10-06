@@ -44,12 +44,6 @@ const Header = () => {
       label: 'Profile',
       icon: User,
       description: 'Manage your agents and rentals'
-    },
-    {
-      path: '/workflow',
-      label: 'Workflow Builder',
-      icon: Wrench,
-      description: 'Create and edit agent workflows'
     }
   ]
 

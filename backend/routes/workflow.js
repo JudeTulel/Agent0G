@@ -42,7 +42,7 @@ const processWorkflowNode = async (node, broker, uploadedFiles) => {
       }
 
       // Get provider metadata
-      const { endpoint, model } = await broker.inference.getServiceMetadata(node.providerAddress);
+      const { endpoint, model } = await broker.inference.getServiceMetadata([node.providerAddress]);
       return {
         ...node,
         endpoint,

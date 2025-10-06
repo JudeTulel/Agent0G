@@ -222,8 +222,8 @@ const MarketplacePage = () => {
           </div>
         </section>
 
-        {/* Agents Section */}
-        <section className="py-16">
+  {/* Agents Section */}
+  <section className="py-16" id="marketplace">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8">
             <div>
               <h2 className="text-3xl font-bold mb-2">Featured Agents</h2>

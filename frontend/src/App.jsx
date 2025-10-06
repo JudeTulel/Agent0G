@@ -47,9 +47,14 @@ function App() {
         <Header />
         
         <Routes>
-          <Route path="/" element={<MarketplacePage />} />
+          <Route path="/" element={<>
+            <MarketplacePage />
+            {/* Inline Workflow Builder below the marketplace as requested */}
+            <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <WorkflowPage />
+            </div>
+          </>} />
           <Route path="/profile" element={<ProfilePage />} />
-          <Route path="/workflow" element={<WorkflowPage />} />
           <Route path="/use-agent/:agentId" element={<UseAgentPage />} />
         </Routes>
       </div>

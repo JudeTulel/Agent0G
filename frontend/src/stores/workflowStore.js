@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { getServices as apiGetServices, inference as apiInference } from '../lib/compute';
 
 const useWorkflowStore = create(
   devtools(
@@ -74,16 +75,10 @@ const useWorkflowStore = create(
         loadServices: async () => {
           const { setIsLoadingServices, setAvailableServices } = get();
           setIsLoadingServices(true);
-
           try {
-            const response = await fetch('http://localhost:3001/api/services');
-            if (response.ok) {
-              const services = await response.json();
-              setAvailableServices(services);
-              console.log('✅ Loaded services:', services.length);
-            } else {
-              console.error('❌ Failed to load services:', response.statusText);
-            }
+            const services = await apiGetServices();
+            setAvailableServices(services);
+            console.log('✅ Loaded services:', services.length);
           } catch (error) {
             console.error('❌ Error loading services:', error);
           } finally {
@@ -260,39 +255,26 @@ const useWorkflowStore = create(
               console.log(`🤖 Processing AI node: ${aiNode.data.label}`);
 
               try {
-                const response = await fetch('http://localhost:3001/api/inference', {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    providerAddress: config.providerAddress,
-                    prompt: config.prompt,
-                    userAddress: '0x0000000000000000000000000000000000000000' // Placeholder
-                  })
-                });
+                const result = await apiInference(
+                  config.providerAddress,
+                  config.prompt,
+                  '0x0000000000000000000000000000000000000000'
+                );
+                console.log(`✅ AI node ${aiNode.id} completed:`, result);
 
-                if (response.ok) {
-                  const result = await response.json();
-                  console.log(`✅ AI node ${aiNode.id} completed:`, result);
-
-                  // Update node with result
-                  setNodes(nodes.map((node) =>
-                    node.id === aiNode.id
-                      ? {
-                          ...node,
-                          data: {
-                            ...node.data,
-                            result: result,
-                            lastExecuted: new Date().toISOString()
-                          }
+                // Update node with result
+                setNodes(nodes.map((node) =>
+                  node.id === aiNode.id
+                    ? {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          result: result,
+                          lastExecuted: new Date().toISOString()
                         }
-                      : node
-                  ));
-                } else {
-                  const error = await response.text();
-                  console.error(`❌ AI node ${aiNode.id} failed:`, error);
-                }
+                      }
+                    : node
+                ));
               } catch (error) {
                 console.error(`❌ Error processing AI node ${aiNode.id}:`, error);
               }
