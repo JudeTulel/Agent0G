@@ -1,0 +1,179 @@
+{
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "type": "trigger",
+      "position": {
+        "x": 52.24217311233883,
+        "y": -68.89963167587477
+      },
+      "data": {
+        "label": "Data Webhook",
+        "config": {
+          "type": "webhook",
+          "url": "/api/webhook/sheets",
+          "method": "POST"
+        }
+      },
+      "width": 200,
+      "height": 126,
+      "selected": false,
+      "positionAbsolute": {
+        "x": 52.24217311233883,
+        "y": -68.89963167587477
+      },
+      "dragging": false
+    },
+    {
+      "id": "sheets-read",
+      "type": "googleSheets",
+      "position": {
+        "x": 208.40763529741207,
+        "y": 77.01057960778184
+      },
+      "data": {
+        "label": "Read Sheet Data",
+        "operation": "read",
+        "selectedSheet": "Sheet1",
+        "range": "A1:Z100"
+      },
+      "width": 350,
+      "height": 136,
+      "selected": false,
+      "positionAbsolute": {
+        "x": 208.40763529741207,
+        "y": 77.01057960778184
+      },
+      "dragging": false
+    },
+    {
+      "id": "data-process",
+      "type": "logic",
+      "position": {
+        "x": 611.9974779663648,
+        "y": 187.25152762515722
+      },
+      "data": {
+        "label": "Process Data",
+        "config": {
+          "type": "transform",
+          "inputData": "{{sheets-read.result.values}}",
+          "transformCode": "return data.filter(row => row[0] && row[0] !== \"Name\").map(row => ({ name: row[0], value: row[1], processed: true }))",
+          "outputVariable": "filteredData"
+        }
+      },
+      "width": 200,
+      "height": 202,
+      "selected": false,
+      "positionAbsolute": {
+        "x": 611.9974779663648,
+        "y": 187.25152762515722
+      },
+      "dragging": false
+    },
+    {
+      "id": "sheets-write",
+      "type": "googleSheets",
+      "position": {
+        "x": 858.811533646078,
+        "y": 373.714367913816
+      },
+      "data": {
+        "label": "Write Results",
+        "operation": "write",
+        "selectedSheet": "Processed",
+        "range": "A1:B{{data-process.result.length}}"
+      },
+      "width": 350,
+      "height": 136,
+      "selected": false,
+      "positionAbsolute": {
+        "x": 858.811533646078,
+        "y": 373.714367913816
+      },
+      "dragging": false
+    },
+    {
+      "id": "6",
+      "type": "ai",
+      "position": {
+        "x": 1602.270377468027,
+        "y": 112.9048300731244
+      },
+      "data": {
+        "label": "New llm",
+        "type": "llm",
+        "config": {}
+      },
+      "width": 220,
+      "height": 173,
+      "selected": true,
+      "positionAbsolute": {
+        "x": 1602.270377468027,
+        "y": 112.9048300731244
+      },
+      "dragging": false
+    },
+    {
+      "id": "7",
+      "type": "ai",
+      "position": {
+        "x": 1317.5308279290311,
+        "y": 512.7180337764519
+      },
+      "data": {
+        "label": "New llm",
+        "type": "llm",
+        "config": {}
+      },
+      "width": 220,
+      "height": 173,
+      "selected": false,
+      "dragging": false,
+      "positionAbsolute": {
+        "x": 1317.5308279290311,
+        "y": 512.7180337764519
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1-2",
+      "source": "webhook-trigger",
+      "target": "sheets-read"
+    },
+    {
+      "id": "e2-3",
+      "source": "sheets-read",
+      "target": "data-process"
+    },
+    {
+      "id": "e3-4",
+      "source": "data-process",
+      "target": "sheets-write",
+      "selected": false
+    },
+    {
+      "source": "sheets-write",
+      "sourceHandle": null,
+      "target": "7",
+      "targetHandle": null,
+      "animated": true,
+      "id": "reactflow__edge-sheets-write-7"
+    },
+    {
+      "source": "7",
+      "sourceHandle": null,
+      "target": "6",
+      "targetHandle": null,
+      "animated": true,
+      "id": "reactflow__edge-7-6"
+    }
+  ],
+  "metadata": {
+    "name": "My Workflow",
+    "description": "A sample AI agent workflow",
+    "version": "1.0.0",
+    "createdAt": "2025-10-18T15:30:24.110Z"
+  }
+}

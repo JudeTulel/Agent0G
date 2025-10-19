@@ -25,7 +25,7 @@ export const ogChain = {
 }
 
 export const ogTestnet = {
-  id: 16601,
+  id: 16602,
   name: '0G-Galileo-Testnet',
   nativeCurrency: {
     decimals: 18,
@@ -63,21 +63,21 @@ export const config = createConfig({
   },
 })
 
-// Smart contract addresses (from deployment)
+// Smart contract addresses 
 export const CONTRACT_ADDRESSES = {
   [ogTestnet.id]: {
-    AgentRegistry: '0x1234567890123456789012345678901234567890', // Replace with actual addresses
-    AgentRental: '0x2345678901234567890123456789012345678901',
-    UsageTracking: '0x3456789012345678901234567890123456789012',
+    AgentRegistry: '0x27ba7979978d28Ff39918c89379391B90675Ab3f', 
+    AgentRental: '0xE540671912401FB13405e81958a19e9F4153437f',
+    UsageTracking: '',
   },
   [ogChain.id]: {
     AgentRegistry: '0x4567890123456789012345678901234567890123',
     AgentRental: '0x5678901234567890123456789012345678901234',
-    UsageTracking: '0x6789012345678901234567890123456789012345',
+    UsageTracking: '0xeB47b31e69CA4fE4fe1A6fCf11Cb107F24F1302B',
   },
 }
 
-// Contract ABIs (simplified for demo)
+// Contract ABIs 
 export const AGENT_REGISTRY_ABI = [
   {
     "inputs": [

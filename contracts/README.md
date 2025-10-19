@@ -76,6 +76,6 @@ Tracks and verifies AI agent usage with 0G Compute integration.
 - `getUsageStats()` - Get usage statistics
 
 ## Deployment Details 
-AgentRegistry deployed at: 0x02D5C205B3E4F550a7c6D1432E3E12c106A25a9a
-AgentRental deployed at: 0xaffd76b978b9F48F3EEbEB20cB1B43C699855Ee3
-UsageTracking deployed at: 0x984E73D5F27859b05118205A9C73A3B5e0816B4B
+AgentRegistry deployed at: 0x27ba7979978d28Ff39918c89379391B90675Ab3f
+AgentRental deployed at: 0xE540671912401FB13405e81958a19e9F4153437f
+UsageTracking deployed at: 0xeB47b31e69CA4fE4fe1A6fCf11Cb107F24F1302B

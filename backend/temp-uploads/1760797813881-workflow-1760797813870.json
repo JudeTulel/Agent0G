@@ -1,0 +1,101 @@
+{
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "type": "trigger",
+      "position": {
+        "x": 100,
+        "y": 100
+      },
+      "data": {
+        "label": "Data Webhook",
+        "config": {
+          "type": "webhook",
+          "url": "/api/webhook/sheets",
+          "method": "POST"
+        }
+      }
+    },
+    {
+      "id": "sheets-read",
+      "type": "googleSheets",
+      "position": {
+        "x": 300,
+        "y": 100
+      },
+      "data": {
+        "label": "Read Sheet Data",
+        "operation": "read",
+        "selectedSheet": "Sheet1",
+        "range": "A1:Z100"
+      }
+    },
+    {
+      "id": "data-process",
+      "type": "logic",
+      "position": {
+        "x": 500,
+        "y": 100
+      },
+      "data": {
+        "label": "Process Data",
+        "config": {
+          "type": "transform",
+          "inputData": "{{sheets-read.result.values}}",
+          "transformCode": "return data.filter(row => row[0] && row[0] !== \"Name\").map(row => ({ name: row[0], value: row[1], processed: true }))",
+          "outputVariable": "filteredData"
+        }
+      }
+    },
+    {
+      "id": "sheets-write",
+      "type": "googleSheets",
+      "position": {
+        "x": 700,
+        "y": 100
+      },
+      "data": {
+        "label": "Write Results",
+        "operation": "write",
+        "selectedSheet": "Processed",
+        "range": "A1:B{{data-process.result.length}}"
+      }
+    },
+    {
+      "id": "5",
+      "type": "httpRequest",
+      "position": {
+        "x": 950,
+        "y": 100
+      },
+      "data": {
+        "label": "New http",
+        "type": "http",
+        "config": {}
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1-2",
+      "source": "webhook-trigger",
+      "target": "sheets-read"
+    },
+    {
+      "id": "e2-3",
+      "source": "sheets-read",
+      "target": "data-process"
+    },
+    {
+      "id": "e3-4",
+      "source": "data-process",
+      "target": "sheets-write"
+    }
+  ],
+  "metadata": {
+    "name": "My Workflow",
+    "description": "A sample AI agent workflow",
+    "version": "1.0.0",
+    "createdAt": "2025-10-18T14:30:13.870Z"
+  }
+}

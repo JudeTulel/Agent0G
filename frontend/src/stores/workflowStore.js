@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { getServices as apiGetServices, inference as apiInference } from '../lib/compute';
+import { applyNodeChanges, applyEdgeChanges, addEdge } from 'reactflow';
 
 const useWorkflowStore = create(
   devtools(
@@ -8,51 +9,51 @@ const useWorkflowStore = create(
       (set, get) => ({
         // Workflow state
         nodes: [
-          {
-            id: '1',
-            type: 'trigger',
+  {
+    id: '1',
+    type: 'trigger',
             position: { x: 100, y: 100 },
-            data: {
-              label: 'Webhook Trigger',
-              type: 'webhook',
-              config: {
-                url: 'https://api.example.com/webhook',
-                method: 'POST'
-              }
-            },
-          },
-          {
-            id: '2',
-            type: 'ai',
+    data: {
+      label: 'Webhook Trigger',
+      type: 'webhook',
+      config: {
+        url: 'https://api.example.com/webhook',
+        method: 'POST'
+      }
+    },
+  },
+  {
+    id: '2',
+    type: 'ai',
             position: { x: 400, y: 100 },
-            data: {
-              label: 'LLM Processing',
-              type: 'llm',
-              config: {
-                model: 'llama-3-8b',
-                prompt: 'Analyze the incoming data and extract key insights',
-                temperature: 0.7
-              }
-            },
-          },
-          {
-            id: '3',
-            type: 'action',
-            position: { x: 700, y: 100 },
-            data: {
-              label: 'Send Email',
-              type: 'email',
-              config: {
-                to: 'user@example.com',
-                subject: 'AI Analysis Complete',
-                template: 'analysis_complete'
-              }
-            },
-          },
+    data: {
+      label: 'LLM Processing',
+      type: 'llm',
+      config: {
+        model: 'llama-3-8b',
+        prompt: 'Analyze the incoming data and extract key insights',
+        temperature: 0.7
+      }
+    },
+  },
+  {
+    id: '3',
+    type: 'action',
+    position: { x: 900, y: 300 },
+    data: {
+      label: 'Send Email',
+      type: 'email',
+      config: {
+        to: 'user@example.com',
+        subject: 'AI Analysis Complete',
+        template: 'analysis_complete'
+      }
+    },
+  },
         ],
         edges: [
-          { id: 'e1-2', source: '1', target: '2', animated: true },
-          { id: 'e2-3', source: '2', target: '3', animated: true },
+  { id: 'e1-2', source: '1', target: '2', animated: true },
+  { id: 'e2-3', source: '2', target: '3', animated: true },
         ],
 
         // UI state
@@ -61,10 +62,39 @@ const useWorkflowStore = create(
         isRunning: false,
         availableServices: [],
         isLoadingServices: false,
+        reactFlowInstance: null,
 
         // Actions
         setNodes: (nodes) => set({ nodes }),
         setEdges: (edges) => set({ edges }),
+        setReactFlowInstance: (instance) => set({ reactFlowInstance: instance }),
+        
+        // View control
+        centerOnFirstNode: () => {
+          const { nodes, reactFlowInstance } = get();
+          if (nodes.length > 0 && reactFlowInstance) {
+            // Find the first node (usually a trigger node)
+            const firstNode = nodes[0];
+            reactFlowInstance.setCenter(firstNode.position.x, firstNode.position.y, { zoom: 1, duration: 800 });
+          }
+        },
+
+        onNodesChange: (changes) => {
+            set({
+              nodes: applyNodeChanges(changes, get().nodes),
+            });
+          },
+          onEdgesChange: (changes) => {
+            set({
+              edges: applyEdgeChanges(changes, get().edges),
+            });
+          },
+          onConnect: (connection) => {
+            set({
+              edges: addEdge({ ...connection, animated: true }, get().edges),
+            });
+          },
+
         setSelectedNode: (node) => set({ selectedNode: node }),
         setShowPropertiesSidebar: (show) => set({ showPropertiesSidebar: show }),
         setIsRunning: (running) => set({ isRunning: running }),
@@ -89,10 +119,20 @@ const useWorkflowStore = create(
         // Node management
         addNode: (nodeType, nodeSubtype) => {
           const { nodes } = get();
+          
+          // Calculate position based on existing nodes
+          let maxX = 100;
+          let maxY = 100;
+          
+          if (nodes.length > 0) {
+            maxX = Math.max(...nodes.map(n => n.position.x)) + 250;
+            maxY = Math.max(...nodes.map(n => n.position.y));
+          }
+          
           const newNode = {
             id: `${nodes.length + 1}`,
             type: nodeType,
-            position: { x: Math.random() * 400 + 100, y: Math.random() * 400 + 100 },
+            position: { x: maxX, y: maxY },
             data: {
               label: `New ${nodeSubtype}`,
               type: nodeSubtype,

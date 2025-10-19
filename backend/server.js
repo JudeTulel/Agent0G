@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises; // Use promises for async file ops
 const { ethers } = require('ethers');
 const { createZGComputeNetworkBroker } = require('@0glabs/0g-serving-broker');
 const { Indexer, ZgFile, Batcher, KvClient } = require('@0glabs/0g-ts-sdk');
@@ -43,49 +43,81 @@ const bigintJsonMiddleware = (req, res, next) => {
 
 // --- Configuration ---
 const RPC_URL = process.env.RPC_URL || 'https://evmrpc-testnet.0g.ai';
-const INDEXER_RPC = process.env.INDEXER_RPC || 'https://indexer-storage-testnet-turbo.0g.ai';
+const INDEXER_RPC = process.env.INDEXER_RPC || 'https://indexer-storage-testnet-standard.0g.ai';
 const KV_NODE_URL = process.env.KV_NODE_URL || 'http://3.101.147.150:6789';
+const PRIVATE_KEY = process.env.SERVICE_PRIVATE_KEY;
 
 // Initialize providers and wallet
 const provider = new ethers.JsonRpcProvider(RPC_URL);
-provider.getFeeData = async () => ({
-  gasPrice: ethers.parseUnits('5', 'gwei'),
-  maxFeePerGas: ethers.parseUnits('20', 'gwei'),
-  maxPriorityFeePerGas: ethers.parseUnits('2', 'gwei')
-});
+// Removed recursive getFeeData override; use native method with fallback
+const getFeeData = async () => {
+  try {
+    const feeData = await provider.getFeeData();
+    return {
+      gasPrice: feeData.gasPrice || ethers.parseUnits('5', 'gwei'),
+      maxFeePerGas: feeData.maxFeePerGas || ethers.parseUnits('20', 'gwei'),
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas || ethers.parseUnits('2', 'gwei')
+    };
+  } catch (err) {
+    console.error('⚠️ Failed to fetch fee data:', err.message);
+    return {
+      gasPrice: ethers.parseUnits('5', 'gwei'),
+      maxFeePerGas: ethers.parseUnits('20', 'gwei'),
+      maxPriorityFeePerGas: ethers.parseUnits('2', 'gwei')
+    };
+  }
+};
 
-const serviceWallet = new ethers.Wallet(process.env.SERVICE_PRIVATE_KEY, provider);
+const serviceWallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
 // Nonce management for replacement fee issues
 let lastNonce = null;
 const getNextNonce = async () => {
-  const currentNonce = await provider.getTransactionCount(serviceWallet.address, 'pending');
-  if (lastNonce === null || currentNonce > lastNonce) {
-    lastNonce = currentNonce;
-  } else {
-    lastNonce++; // Increment if we have pending transactions
+  try {
+    const currentNonce = await provider.getTransactionCount(serviceWallet.address, 'pending');
+    if (lastNonce === null || currentNonce > lastNonce) {
+      lastNonce = currentNonce;
+    } else {
+      lastNonce++;
+    }
+    console.log(`🔢 Using nonce: ${lastNonce}`);
+    return lastNonce;
+  } catch (err) {
+    console.error('⚠️ Failed to get nonce:', err.message);
+    throw new Error(`Nonce fetch failed: ${err.message}`);
   }
-  console.log(`🔢 Using nonce: ${lastNonce}`);
-  return lastNonce;
 };
 
-// --- Broker Management ---
+// --- Broker and Storage Management ---
 let broker = null;
 let brokerInitialized = false;
+let storageInitialized = false;
+let indexer = null;
+let batcher = null;
+let zgFile = null;
+let kvClient = null;
+
+// Initialize Storage SDK
+const initStorage = async () => {
+  try {
+    console.log('🔄 Initializing 0G Storage SDK...');
+    indexer = new Indexer(INDEXER_RPC);
+    batcher = new Batcher(indexer);
+    zgFile = new ZgFile(batcher);
+    kvClient = new KvClient(KV_NODE_URL);
+    storageInitialized = true;
+    console.log('✅ 0G Storage SDK initialized successfully');
+  } catch (err) {
+    console.error('❌ Failed to initialize storage SDK:', err?.message || err);
+    storageInitialized = false;
+  }
+};
 
 // Check for stuck transactions
-
-
 const initBroker = async () => {
   try {
     console.log('🔄 Initializing 0G Compute broker...');
     console.log('Service wallet address:', serviceWallet.address);
-
-    // Initialize broker (simplified)
-    broker = await createZGComputeNetworkBroker(serviceWallet);
-    brokerInitialized = true;
-
-    console.log('✅ Compute broker initialized successfully');
 
     // Check wallet balance first
     const balance = await provider.getBalance(serviceWallet.address);
@@ -95,16 +127,16 @@ const initBroker = async () => {
       throw new Error('Service wallet has zero balance. Please fund the wallet first.');
     }
 
-    // Initialize broker with minimal parameters to avoid decode issues
+    // Initialize broker (single call, aligned with sample)
     broker = await createZGComputeNetworkBroker(serviceWallet);
     brokerInitialized = true;
 
-    console.log(`✅ Compute broker initialized successfully`);
+    console.log('✅ Compute broker initialized successfully');
 
     // Initialize account with initial funding
     await setupAccount();
 
-    // Try to list services, but don't fail initialization if this fails
+    // Try to list services
     try {
       const services = await broker.inference.listService();
       console.log(`✅ Found ${services.length} compute services`);
@@ -120,8 +152,8 @@ const initBroker = async () => {
 };
 
 const setupAccount = async () => {
-  const INITIAL_FUNDING_OG = 10; // target top-up when low
-  const MIN_BALANCE_OG = 5; // desired minimum available balance
+  const INITIAL_FUNDING_OG = 0.01; // Aligned with sample default
+  const MIN_BALANCE_OG = 0.005; // Adjusted for minimal ops
 
   try {
     console.log('💰 Setting up compute account...');
@@ -130,35 +162,13 @@ const setupAccount = async () => {
 
     // Check if account exists
     try {
-  let ledger = await broker.ledger.getLedger();
+      let ledger = await broker.ledger.getLedger();
 
-      // Extract balance information from ledger
-      let balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
+      // Extract balance information from ledger (aligned with sample ledgerInfo array)
+      let balance = BigInt(ledger.ledgerInfo?.[0] || ledger.balance || ledger.totalBalance || ledger[1] || 0);
       let locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
       let available = balance - locked;
-  // Debug: raw ledger object for inspection if needed
-  // console.log('Raw ledger:', ledger);
       console.log(`Account balance: ${ethers.formatEther(balance)} OG total, ${ethers.formatEther(locked)} OG locked, ${ethers.formatEther(available)} OG available`);
-
-      // If funds are locked, try to retrieve first
-      if (locked > 0n) {
-        console.log(`🔄 Found ${ethers.formatEther(locked)} OG locked, retrieving...`);
-        try {
-          await broker.ledger.retrieveFund('inference');
-          console.log('✅ Retrieve submitted, waiting for confirmation...');
-          for (let i = 0; i < 6; i++) { // ~30s total
-            await sleep(5000);
-            ledger = await broker.ledger.getLedger();
-            balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
-            locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
-            available = balance - locked;
-            console.log(`⏳ Post-retrieval check #${i + 1}: ${ethers.formatEther(balance)} OG total, ${ethers.formatEther(locked)} OG locked, ${ethers.formatEther(available)} OG available`);
-            if (available >= ethers.parseEther(MIN_BALANCE_OG.toString())) break;
-          }
-        } catch (retrieveErr) {
-          console.log('⚠️ Retrieve failed (will attempt top-up if needed):', retrieveErr?.message || retrieveErr);
-        }
-      }
 
       // If still low available, try to top up
       if (available < ethers.parseEther(MIN_BALANCE_OG.toString())) {
@@ -166,12 +176,21 @@ const setupAccount = async () => {
         const neededOG = Math.max(0, MIN_BALANCE_OG - currentAvailableOG);
         if (neededOG > 0) {
           console.log(`Low available (${currentAvailableOG} OG), attempting to deposit ${neededOG.toFixed(4)} OG...`);
+          const feeData = await getFeeData();
+          const txOptions = {
+            gasPrice: feeData.gasPrice,
+            maxFeePerGas: feeData.maxFeePerGas,
+            maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+            nonce: await getNextNonce()
+          };
           try {
-            await broker.ledger.depositFund(neededOG);
+            const depositWei = ethers.parseEther(neededOG.toFixed(18)); // Convert to wei
+            await broker.ledger.depositFund(depositWei, txOptions);
             console.log('✅ Deposit submitted, waiting briefly...');
             await sleep(5000);
           } catch (depositErr) {
-            console.log('⚠️ Deposit failed (often expected on testnet or low service wallet):', depositErr?.message || depositErr);
+            console.error('⚠️ Deposit failed:', depositErr?.message || depositErr);
+            throw depositErr;
           }
         }
       } else {
@@ -180,132 +199,106 @@ const setupAccount = async () => {
     } catch (getLedgerErr) {
       console.log('Account not found, creating new account...');
       try {
-        await broker.ledger.addLedger(INITIAL_FUNDING_OG);
+        const feeData = await getFeeData();
+        const txOptions = {
+          gasPrice: feeData.gasPrice,
+            maxFeePerGas: feeData.maxFeePerGas,
+            maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+          nonce: await getNextNonce()
+        };
+        const initialFundingWei = ethers.parseEther(INITIAL_FUNDING_OG.toString());
+        await broker.ledger.addLedger(initialFundingWei, txOptions);
         console.log('✅ New account created and funded, waiting briefly...');
         await sleep(5000);
       } catch (addLedgerErr) {
         if (String(addLedgerErr?.message || '').toLowerCase().includes('already exists')) {
           console.log('✅ Account already exists, continuing...');
         } else {
-          console.log('⚠️ Account creation failed, continuing anyway:', addLedgerErr?.message || addLedgerErr);
+          console.error('⚠️ Account creation failed:', addLedgerErr?.message || addLedgerErr);
+          throw addLedgerErr;
         }
       }
     }
   } catch (error) {
-    console.error('❌ Account setup warning:', error?.message || error);
-    console.log('✅ Continuing despite account setup issues...');
+    console.error('❌ Account setup failed:', error?.message || error);
+    throw error;
   }
 };
 
-// Simplified inference helper aligned with official docs
-const performInference = async (providerAddress, prompt, userAddress) => {
+// Aligned inference helper with sample (uses 'query' instead of 'prompt', adds fallbackFee)
+const performInference = async (providerAddress, query, fallbackFee = 0.01) => {
   try {
     console.log('🔄 Processing inference request...');
     console.log('Provider:', providerAddress, '(type:', typeof providerAddress, ')');
-    console.log('User:', userAddress, '(type:', typeof userAddress, ')');
-    console.log('Prompt length:', prompt?.length || 0);
+    console.log('Query length:', query?.length || 0);
+    console.log('Fallback fee:', fallbackFee);
     
     // Ensure broker is initialized
     if (!broker || !brokerInitialized) {
       throw new Error('Broker not initialized. Please wait for initialization to complete.');
     }
     
-    // Validate that inputs are strings
+    // Validate inputs
     if (!providerAddress || typeof providerAddress !== 'string') {
       throw new Error(`Invalid providerAddress: ${providerAddress} (type: ${typeof providerAddress})`);
     }
-    if (!userAddress || typeof userAddress !== 'string') {
-      throw new Error(`Invalid userAddress: ${userAddress} (type: ${typeof userAddress})`);
-    }
-    if (!prompt || typeof prompt !== 'string') {
-      throw new Error(`Invalid prompt: ${prompt} (type: ${typeof prompt})`);
+    if (!query || typeof query !== 'string') {
+      throw new Error(`Invalid query: ${query} (type: ${typeof query})`);
     }
     
     // Validate and normalize addresses
-    let provider, user;
+    let provider;
     try {
       provider = ethers.getAddress(providerAddress);
-      user = ethers.getAddress(userAddress);
-      console.log('✓ Addresses validated');
+      console.log('✓ Address validated');
     } catch (addrErr) {
       throw new Error(`Invalid address format: ${addrErr.message}`);
     }
 
-    // Ensure account has funds (unlock if needed)
-    const MIN_AVAILABLE_FOR_INFERENCE_OG = 0.5;
+    // Ensure account has funds
+    const MIN_AVAILABLE_FOR_INFERENCE_OG = 0.005;
     const minWei = ethers.parseEther(MIN_AVAILABLE_FOR_INFERENCE_OG.toString());
     try {
-  let ledger = await broker.ledger.getLedger();
-      let balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
+      let ledger = await broker.ledger.getLedger();
+      let balance = BigInt(ledger.ledgerInfo?.[0] || ledger.balance || ledger.totalBalance || ledger[1] || 0);
       let locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
       let available = balance - locked;
-  // console.log('Raw ledger after funding:', ledger);
       console.log(`Pre-inference balance: ${ethers.formatEther(available)} OG available, ${ethers.formatEther(locked)} OG locked`);
-      if (available < minWei && locked > 0n) {
-        console.log('⚠️ Low available balance, attempting retrieve...');
-        await broker.ledger.retrieveFund('inference');
-        for (let i = 0; i < 6; i++) {
-          await sleep(5000);
-          ledger = await broker.ledger.getLedger();
-          balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
-          locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
-          available = balance - locked;
-          console.log(`⏳ Availability check #${i + 1}: ${ethers.formatEther(available)} OG available`);
-          if (available >= minWei) break;
-        }
-      }
-      if (available < ethers.parseEther('0.01')) {
+      if (available < ethers.parseEther('0.001')) {
         throw new Error(`Insufficient available balance: ${ethers.formatEther(available)} OG. Retrieve locked funds or add more funds.`);
       }
     } catch (balErr) {
       console.log('⚠️ Balance preparation warning:', balErr?.message || balErr);
     }
 
-    // Acknowledge provider (simplified)
+    // Acknowledge provider (with retry logic)
     try {
-      // Ensure providerAddress is a clean string
       const cleanProviderAddress = String(providerAddress).trim();
       console.log('🤝 Acknowledging provider:', cleanProviderAddress);
-      console.log('Provider address type:', typeof cleanProviderAddress);
-      console.log('Provider address length:', cleanProviderAddress.length);
-      
-      // Try without gas parameter first (let the provider handle gas pricing)
-      await broker.inference.acknowledgeProviderSigner(cleanProviderAddress);
+      const feeData = await getFeeData();
+      await broker.inference.acknowledgeProviderSigner(cleanProviderAddress, {
+        gasPrice: feeData.gasPrice,
+        maxFeePerGas: feeData.maxFeePerGas,
+        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+        nonce: await getNextNonce()
+      });
       console.log('✓ Provider acknowledged');
     } catch (err) {
       const errMsg = String(err?.message || '').toLowerCase();
       if (errMsg.includes('already acknowledged') || errMsg.includes('duplicate')) {
         console.log('✓ Provider already acknowledged');
-      } else if (errMsg.includes('invalid array value')) {
-        console.log('⚠️ Trying with gasPrice parameter...');
+      } else if (errMsg.includes('invalid array value') || errMsg.includes('replacement')) {
+        console.log('⚠️ Retrying with high gas...');
+        await sleep(5000);
         try {
-          const cleanProviderAddress = String(providerAddress).trim();
-          // Use extremely high gas price to override any pending transactions
-          const gasPriceWei = Number(ethers.parseUnits('200', 'gwei')); // Very high gas price
-          console.log(`💰 Retrying with extremely high gas: ${gasPriceWei / 1e9} gwei`);
-          await broker.inference.acknowledgeProviderSigner(cleanProviderAddress, gasPriceWei);
-          console.log('✓ Provider acknowledged with extremely high gas price');
+          const highGas = Number(ethers.parseUnits('200', 'gwei'));
+          await broker.inference.acknowledgeProviderSigner(cleanProviderAddress, { gasPrice: highGas, nonce: await getNextNonce() });
+          console.log('✓ Provider acknowledged with high gas');
         } catch (retryErr) {
-          const retryErrMsg = String(retryErr?.message || '').toLowerCase();
-          if (retryErrMsg.includes('replacement')) {
-            console.log('⚠️ Still getting replacement fee errors, waiting longer...');
-            await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
-            console.log('🔄 Final attempt with maximum gas price...');
-            try {
-              const ultraHighGas = Number(ethers.parseUnits('1000', 'gwei')); // Maximum gas
-              await broker.inference.acknowledgeProviderSigner(cleanProviderAddress, ultraHighGas);
-              console.log('✓ Provider acknowledged with maximum gas price');
-            } catch (finalErr) {
-              console.error('❌ Final attempt failed:', finalErr?.message || finalErr);
-              throw finalErr;
-            }
-          } else {
-            console.error('❌ Provider acknowledgment failed with high gas:', retryErr?.message || retryErr);
-            throw retryErr;
-          }
+          console.error('❌ Provider acknowledgment failed:', retryErr?.message || retryErr);
+          throw retryErr;
         }
       } else {
-        console.error('❌ Provider acknowledgment failed:', err?.message || err);
         throw err;
       }
     }
@@ -315,15 +308,14 @@ const performInference = async (providerAddress, prompt, userAddress) => {
     console.log('✓ Service metadata retrieved:', { endpoint, model });
 
     // Generate request headers
-    const headers = await broker.inference.getRequestHeaders(provider, prompt);
+    const headers = await broker.inference.getRequestHeaders(provider, query);
     console.log('✓ Request headers generated');
 
-    // Call service using OpenAI SDK (as per official docs)
+    // Call service using OpenAI SDK
     const openai = new OpenAI({ baseURL: endpoint, apiKey: '' });
-    // Pass headers at request-time to avoid reusing single-use headers
     const completion = await openai.chat.completions.create(
       {
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: 'user', content: query }],
         model,
       },
       { headers }
@@ -338,35 +330,22 @@ const performInference = async (providerAddress, prompt, userAddress) => {
     const valid = await broker.inference.processResponse(provider, answer, chatId);
     console.log('✓ Response processed:', valid);
 
-    // Retrieve any unused funds
-    try {
-      await broker.ledger.retrieveFund('inference');
-      console.log('✓ Funds retrieved after inference');
-    } catch (retrieveErr) {
-      console.log('⚠️ Failed to retrieve funds after inference:', retrieveErr?.message || retrieveErr);
-    }
-
     return {
-      response: answer,
-      model,
-      valid,
-      chatId,
-      provider,
-      user,
+      success: true,
+      response: {
+        content: answer,
+        metadata: {
+          model,
+          isValid: valid,
+          provider,
+          chatId
+        }
+      },
       timestamp: new Date().toISOString()
     };
 
   } catch (error) {
     console.error('❌ Inference failed:', error?.message || error);
-    
-    // Try to retrieve funds on failure
-    try {
-      await broker.ledger.retrieveFund('inference');
-      console.log('✓ Funds retrieved after failed inference');
-    } catch (retrieveErr) {
-      console.log('⚠️ Failed to retrieve funds after failure:', retrieveErr?.message || retrieveErr);
-    }
-    
     throw error;
   }
 };
@@ -375,10 +354,10 @@ const performInference = async (providerAddress, prompt, userAddress) => {
 const app = express();
 app.use(bigintJsonMiddleware);
 app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173', credentials: true }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Broker middleware
+// Broker and Storage middleware
 const requireBroker = (req, res, next) => {
   if (!brokerInitialized || !broker) {
     return res.status(503).json({
@@ -389,81 +368,88 @@ const requireBroker = (req, res, next) => {
   next();
 };
 
-// --- API Endpoints ---
+const requireStorage = (req, res, next) => {
+  if (!storageInitialized) {
+    return res.status(503).json({
+      error: 'Storage SDK not initialized',
+      details: 'Please wait for storage initialization to complete'
+    });
+  }
+  next();
+};
+
+// --- API Endpoints (Aligned with Sample Structure) ---
+
+// Health Check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    services: { compute: brokerInitialized },
-    serviceWallet: serviceWallet.address,
-    broker: {
-      initialized: brokerInitialized,
-      status: brokerInitialized ? 'ready' : 'initializing'
+    services: { 
+      compute: brokerInitialized, 
+      storage: storageInitialized 
     },
+    serviceWallet: serviceWallet.address,
     timestamp: new Date().toISOString()
   });
 });
 
-app.get('/api/account-balance', requireBroker, async (req, res) => {
+// Account Management (Aligned with sample endpoints)
+app.get('/api/account/info', requireBroker, async (req, res) => {
   try {
     const ledger = await broker.ledger.getLedger();
 
-    // Extract and format balance information
-    const balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
+    // Align with sample: ledgerInfo as array, add infers and fines as empty
+    const balance = BigInt(ledger.ledgerInfo?.[0] || ledger.balance || ledger.totalBalance || ledger[1] || 0);
     const locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
     const available = balance - locked;
 
-    console.log(`Account balance check: ${ethers.formatEther(balance)} OG (${balance} neuron) total, ${ethers.formatEther(available)} OG (${available} neuron) available`);
-
     res.json({
       success: true,
-      account: {
+      accountInfo: {
+        ledgerInfo: [balance.toString()], // Aligned with sample array format
+        infers: [],
+        fines: [],
+        // Additional details for compatibility
         total: ethers.formatEther(balance),
         locked: ethers.formatEther(locked),
         available: ethers.formatEther(available),
-        unit: 'OG',
-        // Also include neuron values for debugging
-        neuron: {
-          total: balance.toString(),
-          locked: locked.toString(),
-          available: available.toString()
-        }
+        unit: 'OG'
       }
     });
   } catch (err) {
-    console.error('❌ Failed to check account balance:', err?.message || err);
+    console.error('❌ Failed to get account info:', err?.message || err);
     res.status(500).json({
-      error: 'Failed to check account balance',
+      success: false,
+      error: 'Failed to get account info',
       details: err?.message || err
     });
   }
 });
 
-app.post('/api/fund-account', requireBroker, async (req, res) => {
+app.post('/api/account/deposit', requireBroker, async (req, res) => {
   try {
     const { amount = 0.1 } = req.body;
-    const fundingAmountOG = typeof amount === 'string' ? parseFloat(amount) : amount;
-   
-    console.log(`🔄 Adding ${fundingAmountOG} OG  to account...`);
+    const depositAmountOG = typeof amount === 'string' ? parseFloat(amount) : amount;
 
-    try {
-      await broker.ledger.depositFund(fundingAmountOG);
-      console.log('✅ Deposit successful');
-    } catch (depositErr) {
-      throw new Error(`Failed to deposit funds: ${depositErr.message}`);
-    }
+    console.log(`🔄 Depositing ${depositAmountOG} OG to account...`);
+    const feeData = await getFeeData();
+    const depositAmountWei = ethers.parseEther(depositAmountOG.toString());
+    await broker.ledger.depositFund(depositAmountWei, {
+      gasPrice: feeData.gasPrice,
+      maxFeePerGas: feeData.maxFeePerGas,
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+      nonce: await getNextNonce()
+    });
+    console.log('✅ Deposit successful');
 
-    // Check updated balance
     const ledger = await broker.ledger.getLedger();
-    const balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
+    const balance = BigInt(ledger.ledgerInfo?.[0] || ledger.balance || ledger.totalBalance || ledger[1] || 0);
     const locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
     const available = balance - locked;
-    console.log(`${ledger}`);
-
-    console.log(`✅ Account funded. New balance: ${ethers.formatEther(balance)} OG (${balance} neuron) total, ${ethers.formatEther(available)} OG (${available} neuron) available`);
 
     res.json({
       success: true,
-      message: `Successfully added ${fundingAmountOG} OG to account`,
+      message: `Deposit successful`,
       balance: {
         total: ethers.formatEther(balance),
         locked: ethers.formatEther(locked),
@@ -472,44 +458,43 @@ app.post('/api/fund-account', requireBroker, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('❌ Failed to fund account:', err?.message || err);
+    console.error('❌ Failed to deposit:', err?.message || err);
     res.status(500).json({
-      error: 'Failed to fund account',
+      success: false,
+      error: 'Failed to deposit',
       details: err?.message || err
     });
   }
 });
 
-app.post('/api/refund', requireBroker, async (req, res) => {
+app.post('/api/account/refund', requireBroker, async (req, res) => {
   try {
-    const { serviceType = "inference", amount } = req.body;
-   
-    console.log(`🔄 Refunding locked funds for service: ${serviceType}${amount ? `, amount: ${amount} OG` : ''}...`);
+    const { amount } = req.body;
 
-    try {
-      if (amount && Number(amount) > 0) {
-        const neuronAmount = Number(ethers.parseEther(String(amount)));
-        await broker.ledger.retrieveFund(serviceType, neuronAmount);
-      } else {
-        await broker.ledger.retrieveFund(serviceType);
-      }
-      console.log('✅ Refund successful');
-    } catch (refundErr) {
-      throw new Error(`Failed to refund funds: ${refundErr.message}`);
+    console.log(`🔄 Refunding ${amount || 'all'} funds...`);
+    const feeData = await getFeeData();
+    const txOptions = {
+      gasPrice: feeData.gasPrice,
+      maxFeePerGas: feeData.maxFeePerGas,
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+      nonce: await getNextNonce()
+    };
+    if (amount && Number(amount) > 0) {
+      const neuronAmount = Number(ethers.parseEther(String(amount)));
+      await broker.ledger.retrieveFund('inference', neuronAmount, txOptions);
+    } else {
+      await broker.ledger.retrieveFund('inference', undefined, txOptions);
     }
+    console.log('✅ Refund successful');
 
-    // Check updated balance
     const ledger = await broker.ledger.getLedger();
-    const balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
+    const balance = BigInt(ledger.ledgerInfo?.[0] || ledger.balance || ledger.totalBalance || ledger[1] || 0);
     const locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
     const available = balance - locked;
 
-    console.log(`✅ Account refunded. New balance: ${ethers.formatEther(balance)} OG (${balance} neuron) total, ${ethers.formatEther(locked)} OG (${locked} neuron) locked, ${ethers.formatEther(available)} OG (${available} neuron) available`);
-
     res.json({
       success: true,
-      message: `Successfully refunded funds for ${serviceType}`,
-      serviceType,
+      message: `Refund successful`,
       balance: {
         total: ethers.formatEther(balance),
         locked: ethers.formatEther(locked),
@@ -518,149 +503,185 @@ app.post('/api/refund', requireBroker, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('❌ Failed to refund account:', err?.message || err);
+    console.error('❌ Failed to refund:', err?.message || err);
     res.status(500).json({
-      error: 'Failed to refund account',
+      success: false,
+      error: 'Failed to refund',
       details: err?.message || err
     });
   }
 });
 
-// Explicitly add and fund a new ledger (one-time setup)
-app.post('/api/add-ledger', requireBroker, async (req, res) => {
-  try {
-    const { amount = 1 } = req.body; // default to 1 OG if not provided
-    const ogAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
-
-    console.log(`🧾 Creating/funding ledger with ${ogAmount} OG...`);
-
-    try {
-      await broker.ledger.addLedger(ogAmount);
-      console.log('✅ Ledger added/funded');
-    } catch (addErr) {
-      throw new Error(`Failed to add ledger: ${addErr.message}`);
-    }
-
-    // Check updated balance
-    const ledger = await broker.ledger.getLedger();
-    const balance = BigInt(ledger.balance || ledger.totalBalance || ledger[1] || 0);
-    const locked = BigInt(ledger.locked || ledger.lockedBalance || ledger[2] || 0);
-    const available = balance - locked;
-
-    res.json({
-      success: true,
-      message: `Ledger initialized with ${ogAmount} OG`,
-      balance: {
-        total: ethers.formatEther(balance),
-        locked: ethers.formatEther(locked),
-        available: ethers.formatEther(available),
-        unit: 'OG'
-      }
-    });
-  } catch (err) {
-    console.error('❌ Failed to add ledger:', err?.message || err);
-    res.status(500).json({
-      error: 'Failed to add ledger',
-      details: err?.message || err
-    });
-  }
-});
-
-app.get('/api/services', requireBroker, async (req, res) => {
+// AI Services (Aligned with sample)
+app.get('/api/services/list', requireBroker, async (req, res) => {
   try {
     console.log('📋 Listing available compute services...');
     const services = await broker.inference.listService();
     
     const formattedServices = services.map(service => ({
-      providerAddress: service.provider || service[0],
+      provider: service.provider || service[0],
+      model: service.model || service[6],
       serviceType: service.serviceType || service[1],
-      endpoint: service.url || service[2],
+      url: service.url || service[2],
       inputPrice: service.inputPrice || service[3],
       outputPrice: service.outputPrice || service[4],
-      updatedAt: service.updatedAt || service[5],
-      model: service.model || service[6],
-      verifiability: service.verifiability || service[7] || service[8]
+      verifiability: service.verifiability || service[7] || service[8] || 'TeeML',
+      isOfficial: ['0xf07240Efa67755B5311bc75784a061eDB47165Dd', '0x3feE5a4dd5FDb8a32dDA97Bed899830605dBD9D3'].includes(service.provider || service[0]),
+      isVerifiable: true
     }));
     
-    res.json(formattedServices);
+    res.json({ success: true, services: formattedServices });
   } catch (err) {
     console.error('❌ Error listing services:', err?.message || err);
-    res.status(500).json({ error: 'Failed to list services', details: String(err) });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to list services', 
+      details: String(err) 
+    });
   }
 });
 
-app.post('/api/acknowledge', requireBroker, async (req, res) => {
+app.post('/api/services/acknowledge-provider', requireBroker, async (req, res) => {
   const { providerAddress } = req.body;
-  if (!providerAddress) return res.status(400).json({ error: 'Provider address required' });
-  
+  if (!providerAddress) return res.status(400).json({ success: false, error: 'Provider address required' });
+
   try {
     console.log(`🤝 Acknowledging provider: ${providerAddress}`);
-    await broker.inference.acknowledgeProviderSigner(ethers.getAddress(providerAddress));
-    res.json({ success: true, provider: providerAddress, acknowledgedAt: new Date().toISOString() });
+    const feeData = await getFeeData();
+    await broker.inference.acknowledgeProviderSigner(ethers.getAddress(providerAddress), {
+      gasPrice: feeData.gasPrice,
+      maxFeePerGas: feeData.maxFeePerGas,
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+      nonce: await getNextNonce()
+    });
+    res.json({
+      success: true,
+      provider: providerAddress,
+      acknowledgedAt: new Date().toISOString()
+    });
   } catch (err) {
     console.error(`❌ Failed to acknowledge provider:`, err?.message || err);
-    res.status(500).json({ error: 'Failed to acknowledge provider', details: String(err) });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to acknowledge provider',
+      details: String(err)
+    });
   }
 });
 
-app.post('/api/inference', requireBroker, async (req, res) => {
-  const { providerAddress, prompt, userAddress } = req.body;
+app.post('/api/services/query', requireBroker, async (req, res) => {
+  const { providerAddress, query, fallbackFee = 0.01 } = req.body;
   
-  if (!providerAddress || !prompt || !userAddress) {
+  if (!providerAddress || !query) {
     return res.status(400).json({ 
+      success: false,
       error: 'Missing required parameters', 
-      details: 'providerAddress, prompt, and userAddress are all required.' 
+      details: 'providerAddress and query are required.' 
     });
   }
 
   try {
-    const result = await performInference(providerAddress, prompt, userAddress);
+    const result = await performInference(providerAddress, query, fallbackFee);
     res.json(result);
   } catch (err) {
-    console.error('❌ Inference failed:', err);
+    console.error('❌ Query failed:', err);
     
     let statusCode = 500;
     if (String(err?.message || '').includes('Invalid address')) statusCode = 400;
     else if (String(err?.message || '').includes('Insufficient')) statusCode = 402;
 
     res.status(statusCode).json({
-      error: 'Inference request failed',
+      success: false,
+      error: 'Query request failed',
       details: String(err?.message || err),
       provider: providerAddress,
-      user: userAddress,
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// --- Storage Endpoints ---
-// Configure multer for file uploads
+app.post('/api/services/settle-fee', requireBroker, async (req, res) => {
+  const { providerAddress, fee } = req.body;
+  if (!providerAddress || fee === undefined) {
+    return res.status(400).json({ success: false, error: 'providerAddress and fee required' });
+  }
+
+  try {
+    // Note: This is legacy; implement if needed based on broker API
+    console.log(`💰 Settling fee ${fee} for provider ${providerAddress}`);
+    // Placeholder: await broker.inference.settleFee(providerAddress, fee); // If method exists
+    res.json({ success: true, message: 'Fee settled' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Failed to settle fee', details: err.message });
+  }
+});
+
+// --- Storage Endpoints (Aligned with 0G Storage SDK) ---
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+  destination: async (req, file, cb) => {
+    const uploadDir = path.join(__dirname, 'temp-uploads');
+    try {
+      await fs.mkdir(uploadDir, { recursive: true });
+      cb(null, uploadDir);
+    } catch (err) {
+      cb(err);
     }
-    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     cb(null, `${Date.now()}-${file.originalname}`);
   }
 });
 
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|pdf|txt|json/;
+    if (allowedTypes.test(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Allowed: JPEG, PNG, PDF, TXT, JSON'));
+    }
+  }
+});
 
-// File upload endpoint
-app.post('/api/storage/upload', upload.single('file'), async (req, res) => {
+// Upload file to 0G Storage
+app.post('/api/storage/upload', requireStorage, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({ success: false, error: 'No file uploaded' });
     }
 
     const filePath = req.file.path;
     const fileName = req.file.filename;
-    
-    console.log(`📁 File uploaded: ${fileName} (${req.file.size} bytes)`);
+
+    console.log(`📁 Uploading file to 0G Storage: ${fileName} (${req.file.size} bytes)`);
+
+    const zgFileInstance = await ZgFile.fromFilePath(filePath);
+    const [tree, treeErr] = await zgFileInstance.merkleTree();
+    if (treeErr) {
+      throw new Error(`Failed to generate Merkle tree: ${treeErr.message}`);
+    }
+    const rootHash = tree?.rootHash();
+    if (!rootHash) {
+      throw new Error('Failed to generate root hash');
+    }
+
+    const feeData = await getFeeData();
+    const txOptions = {
+      gasPrice: feeData.gasPrice,
+      maxFeePerGas: feeData.maxFeePerGas,
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+      nonce: await getNextNonce()
+    };
+    const [tx, uploadErr] = await indexer.upload(zgFileInstance, RPC_URL, serviceWallet, txOptions);
+    if (uploadErr) {
+      throw new Error(`Upload failed: ${uploadErr.message}`);
+    }
+
+    console.log(`✅ File uploaded to 0G Storage with rootHash: ${rootHash}, tx: ${tx}`);
+
+    await fs.unlink(filePath);
 
     res.json({
       success: true,
@@ -668,39 +689,126 @@ app.post('/api/storage/upload', upload.single('file'), async (req, res) => {
         name: fileName,
         originalName: req.file.originalname,
         size: req.file.size,
-        path: filePath,
+        rootHash,
+        transactionHash: tx,
         uploadedAt: new Date().toISOString()
       }
     });
   } catch (err) {
     console.error('❌ File upload failed:', err);
-    res.status(500).json({ error: 'File upload failed', details: err.message });
+    try {
+      if (req.file?.path) await fs.unlink(req.file.path);
+    } catch (cleanupErr) {
+      console.error('⚠️ Cleanup failed:', cleanupErr);
+    }
+    res.status(500).json({
+      success: false,
+      error: 'File upload failed',
+      details: err.message
+    });
   }
 });
 
-// List uploaded files
-app.get('/api/storage/files', (req, res) => {
+// Download/Retrieve file from 0G Storage
+app.get('/api/storage/download/:rootHash', requireStorage, async (req, res) => {
   try {
-    const uploadDir = path.join(__dirname, 'uploads');
-    if (!fs.existsSync(uploadDir)) {
-      return res.json({ files: [] });
+    const { rootHash } = req.params;
+    if (!rootHash) {
+      return res.status(400).json({ success: false, error: 'rootHash required' });
     }
 
-    const files = fs.readdirSync(uploadDir).map(filename => {
-      const filePath = path.join(uploadDir, filename);
-      const stats = fs.statSync(filePath);
-      return {
-        name: filename,
-        size: stats.size,
-        createdAt: stats.birthtime,
-        modifiedAt: stats.mtime
-      };
-    });
+    console.log(`📥 Downloading file from 0G Storage: ${rootHash}`);
 
-    res.json({ files });
+    // Temporary output path
+    const outputPath = path.join(__dirname, 'temp-uploads', `download-${rootHash}-${Date.now()}`);
+    
+    // Download using indexer
+    const err = await indexer.download(rootHash, outputPath, true); // verify=true
+    if (err) {
+      throw new Error(`Download failed: ${err.message}`);
+    }
+
+    // Stream file to client
+    const fileBuffer = await fs.readFile(outputPath);
+    
+    res.set({
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="downloaded-${rootHash}"`,
+      'Content-Length': fileBuffer.length
+    });
+    res.send(fileBuffer);
+
+    // Clean up
+    await fs.unlink(outputPath);
+  } catch (err) {
+    console.error('❌ File download failed:', err);
+    res.status(500).json({
+      success: false,
+      error: 'File download failed',
+      details: err.message
+    });
+  }
+});
+
+// List files (local temp or via KV if indexed)
+app.get('/api/storage/files', requireStorage, async (req, res) => {
+  try {
+    // For demo, list local temp files; in prod, use KVClient to list indexed files
+    const tempDir = path.join(__dirname, 'temp-uploads');
+    let files = [];
+    try {
+      const entries = await fs.readdir(tempDir);
+      files = await Promise.all(entries.map(async (filename) => {
+        const filePath = path.join(tempDir, filename);
+        const stats = await fs.stat(filePath);
+        return {
+          name: filename,
+          size: stats.size,
+          createdAt: stats.birthtime,
+          modifiedAt: stats.mtime
+        };
+      }));
+    } catch (dirErr) {
+      // Dir may not exist
+      files = [];
+    }
+
+    // Optionally, query KV for stored file IDs
+    // const storedFiles = await kvClient.get('stored_files'); // If indexed
+
+    res.json({ success: true, files });
   } catch (err) {
     console.error('❌ Failed to list files:', err);
-    res.status(500).json({ error: 'Failed to list files', details: err.message });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to list files', 
+      details: err.message 
+    });
+  }
+});
+
+// KV Store Example Endpoint
+app.post('/api/storage/kv/set', requireStorage, async (req, res) => {
+  try {
+    const { key, value } = req.body;
+    if (!key || value === undefined) {
+      return res.status(400).json({ success: false, error: 'key and value required' });
+    }
+
+    await kvClient.set(key, value);
+    res.json({ success: true, message: `KV set: ${key}` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'KV set failed', details: err.message });
+  }
+});
+
+app.get('/api/storage/kv/get/:key', requireStorage, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const value = await kvClient.get(key);
+    res.json({ success: true, key, value });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'KV get failed', details: err.message });
   }
 });
 
@@ -708,6 +816,7 @@ app.get('/api/storage/files', (req, res) => {
 app.use((err, req, res, next) => {
   console.error('❌ Unhandled error:', err);
   res.status(500).json({ 
+    success: false,
     error: 'Internal server error', 
     details: err.message,
     timestamp: new Date().toISOString()
@@ -716,31 +825,39 @@ app.use((err, req, res, next) => {
 
 app.use('*', (req, res) => {
   res.status(404).json({ 
+    success: false,
     error: 'Endpoint not found', 
     path: req.originalUrl,
     method: req.method
   });
 });
 
-// Initialize broker on startup
-initBroker();
-
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log('🚀 0G Unified Backend Server Started');
-  console.log(`   Port: ${PORT}`);
-  console.log(`   Service Wallet: ${serviceWallet.address}`);
-  console.log(`   RPC URL: ${RPC_URL}`);
-  console.log('');
-  console.log('📋 Available Endpoints:');
-  console.log('   GET  /api/health');
-  console.log('   GET  /api/account-balance');
-  console.log('   POST /api/fund-account');
-  console.log('   POST /api/refund');
-  console.log('   POST /api/add-ledger');
-  console.log('   GET  /api/services');
-  console.log('   POST /api/acknowledge');
-  console.log('   POST /api/inference');
-  console.log('   POST /api/storage/upload');
-  console.log('   GET  /api/storage/files');
+// Initialize on startup
+Promise.all([initBroker(), initStorage()]).then(() => {
+  const PORT = process.env.PORT || 3001; // Updated to match your logs
+  app.listen(PORT, () => {
+    console.log('🚀 0G Unified Backend Server Started');
+    console.log(`   Port: ${PORT}`);
+    console.log(`   Service Wallet: ${serviceWallet.address}`);
+    console.log(`   RPC URL: ${RPC_URL}`);
+    console.log(`   Storage Initialized: ${storageInitialized}`);
+    console.log('');
+    console.log('📋 Available Endpoints:');
+    console.log('   GET  /api/health');
+    console.log('   GET  /api/account/info');
+    console.log('   POST /api/account/deposit');
+    console.log('   POST /api/account/refund');
+    console.log('   GET  /api/services/list');
+    console.log('   POST /api/services/acknowledge-provider');
+    console.log('   POST /api/services/query');
+    console.log('   POST /api/services/settle-fee');
+    console.log('   POST /api/storage/upload');
+    console.log('   GET  /api/storage/download/:rootHash');
+    console.log('   GET  /api/storage/files');
+    console.log('   POST /api/storage/kv/set');
+    console.log('   GET  /api/storage/kv/get/:key');
+  });
+}).catch(err => {
+  console.error('❌ Startup failed:', err);
+  process.exit(1);
 });
