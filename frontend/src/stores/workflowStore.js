@@ -3,6 +3,45 @@ import { devtools, persist } from 'zustand/middleware';
 import { getServices as apiGetServices, inference as apiInference } from '../lib/compute';
 import { applyNodeChanges, applyEdgeChanges, addEdge } from 'reactflow';
 
+// Helper function to execute sandboxed JavaScript for logic nodes
+const executeLogic = (code, inputData) => {
+  return new Promise((resolve, reject) => {
+    // Create a sandboxed environment using a Web Worker
+    const workerCode = `
+      self.onmessage = function(e) {
+        const { code, inputData } = e.data;
+        try {
+          // User code has access to 'data' and should return a result.
+          const func = new Function('data', code);
+          const result = func(inputData);
+          self.postMessage({ success: true, result });
+        } catch (error) {
+          self.postMessage({ success: false, error: error.message });
+        }
+      };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const worker = new Worker(URL.createObjectURL(blob));
+
+    worker.onmessage = (e) => {
+      if (e.data.success) {
+        resolve(e.data.result);
+      } else {
+        reject(new Error(e.data.error));
+      }
+      worker.terminate();
+    };
+
+    worker.onerror = (e) => {
+      reject(new Error(`Logic execution error: ${e.message}`));
+      worker.terminate();
+    };
+
+    worker.postMessage({ code, inputData });
+  });
+};
+
+
 const useWorkflowStore = create(
   devtools(
     persist(
@@ -63,6 +102,9 @@ const useWorkflowStore = create(
         availableServices: [],
         isLoadingServices: false,
         reactFlowInstance: null,
+        executionLogs: [],
+        isLogPanelOpen: false,
+        nodeRuntimeData: {},
 
         // Actions
         setNodes: (nodes) => set({ nodes }),
@@ -100,19 +142,24 @@ const useWorkflowStore = create(
         setIsRunning: (running) => set({ isRunning: running }),
         setAvailableServices: (services) => set({ availableServices: services }),
         setIsLoadingServices: (loading) => set({ isLoadingServices: loading }),
-
-        // Load available services from backend
-        loadServices: async () => {
-          const { setIsLoadingServices, setAvailableServices } = get();
-          setIsLoadingServices(true);
-          try {
-            const services = await apiGetServices();
-            setAvailableServices(services);
-            console.log('✅ Loaded services:', services.length);
-          } catch (error) {
-            console.error('❌ Error loading services:', error);
-          } finally {
-            setIsLoadingServices(false);
+        setExecutionLogs: (logs) => set({ executionLogs: logs }),
+        addLog: (log) => set((state) => ({ executionLogs: [...state.executionLogs, { message: log, timestamp: new Date() }] })),
+        clearLogs: () => set({ executionLogs: [] }),
+        setIsLogPanelOpen: (isOpen) => set({ isLogPanelOpen: isOpen }),
+        setNodeRuntimeData: (nodeId, data) => set(state => ({
+          nodeRuntimeData: {
+            ...state.nodeRuntimeData,
+            [nodeId]: data,
+          }
+        })),
+        
+        // View control
+        centerOnFirstNode: () => {
+          const { nodes, reactFlowInstance } = get();
+          if (nodes.length > 0 && reactFlowInstance) {
+            // Find the first node (usually a trigger node)
+            const firstNode = nodes[0];
+            reactFlowInstance.setCenter(firstNode.position.x, firstNode.position.y, { zoom: 1, duration: 800 });
           }
         },
 
@@ -156,182 +203,207 @@ const useWorkflowStore = create(
           }
         },
 
+        // This function is used to update the data of a node in the store
         updateNodeData: (nodeId, newData) => {
-          const { nodes } = get();
-          set({
-            nodes: nodes.map((node) =>
+          set((state) => ({
+            nodes: state.nodes.map((node) =>
               node.id === nodeId
                 ? { ...node, data: { ...node.data, ...newData } }
                 : node
-            )
+            ),
+          }));
+        },
+
+        // Data flow state
+        nodeData: {}, // Store data output from each node
+
+        // Data flow actions
+        setNodeData: (nodeId, data) => {
+          set((state) => ({
+            nodeData: { ...state.nodeData, [nodeId]: data },
+            nodes: state.nodes.map((node) =>
+              node.id === nodeId
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      result: data,
+                      lastExecuted: new Date().toISOString(),
+                    },
+                  }
+                : node
+            ),
+          }));
+        },
+
+        getNodeData: (nodeId) => get().nodeData[nodeId],
+
+        // Get data from connected input nodes
+        getConnectedInputData: (nodeId) => {
+          const { edges, nodeData, nodeRuntimeData } = get();
+          const inputEdges = edges.filter((edge) => edge.target === nodeId);
+          const inputData = {};
+
+          inputEdges.forEach((edge) => {
+            const sourceData = nodeRuntimeData[edge.source] || nodeData[edge.source];
+            if (sourceData) {
+              // A simple merge, could be more sophisticated
+              Object.assign(inputData, sourceData);
+            }
           });
+
+          return inputData;
+        },
+
+        // Load available AI services
+        loadServices: async () => {
+          const { setIsLoadingServices, setAvailableServices, addLog } = get();
+          setIsLoadingServices(true);
+          addLog('Fetching available AI services...');
+          try {
+            const services = await apiGetServices();
+            setAvailableServices(services || []);
+            addLog(`Found ${services?.length || 0} services.`);
+          } catch (error) {
+            console.error('Failed to load services:', error);
+            addLog(`Error fetching services: ${error.message}`);
+            setAvailableServices([]);
+          } finally {
+            setIsLoadingServices(false);
+          }
         },
 
         // Workflow execution
-        runWorkflow: async (userAddress, providerAddress) => {
-          const { nodes, setIsRunning, setNodes } = get();
+        runWorkflow: async (startNodeId) => {
+          const {
+            nodes,
+            edges,
+            setIsRunning,
+            setNodeData,
+            getConnectedInputData,
+            addLog,
+            clearLogs,
+            setIsLogPanelOpen,
+            setNodeRuntimeData
+          } = get();
+          
+          clearLogs();
+          setIsLogPanelOpen(true);
+          addLog(`Workflow execution started from node ${startNodeId}.`);
           setIsRunning(true);
+          set({ nodeRuntimeData: {} });
 
-          try {
-            // Find all executable nodes in the workflow
-            const aiNodes = nodes.filter(node => node.type === 'ai');
-            const httpRequestNodes = nodes.filter(node => node.type === 'httpRequest');
-            const googleSheetsNodes = nodes.filter(node => node.type === 'googleSheets');
-            for (const sheetsNode of googleSheetsNodes) {
-              const config = sheetsNode.data;
-              
-              if (!config?.selectedSpreadsheet || !config?.selectedSheet) {
-                console.warn(`⚠️ Skipping Google Sheets node ${sheetsNode.id}: Missing configuration`);
-                continue;
-              }
+          const executionQueue = [startNodeId];
+          const executedNodes = new Set();
 
-              console.log(`📊 Processing Google Sheets node: ${sheetsNode.data.label || 'Google Sheets'}`);
-              
-              try {
-                const token = localStorage.getItem('google_access_token');
-                if (!token) {
-                  console.warn(`⚠️ Skipping Google Sheets node ${sheetsNode.id}: Not authenticated`);
-                  continue;
-                }
+          while (executionQueue.length > 0) {
+            const currentNodeId = executionQueue.shift();
+            if (executedNodes.has(currentNodeId)) continue;
 
-                let result = null;
+            const node = nodes.find((n) => n.id === currentNodeId);
+            if (!node) {
+              addLog(`Error: Node ${currentNodeId} not found.`);
+              continue;
+            }
+            
+            addLog(`Executing node: ${node.data.label || node.id} (Type: ${node.type})`);
+            executedNodes.add(currentNodeId);
 
-                if (config.operation === 'read') {
-                  // Read data from Google Sheets via backend
-                  const response = await fetch('http://localhost:3001/api/google-sheets', {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                      operation: 'read',
-                      spreadsheetId: config.selectedSpreadsheet,
-                      sheetName: config.selectedSheet,
-                      range: config.range,
-                      accessToken: token
-                    })
-                  });
+            const inputData = getConnectedInputData(node.id);
+            addLog(`Node ${node.id} received input: ${JSON.stringify(inputData)}`);
+            let outputData = null;
 
-                  if (response.ok) {
-                    result = await response.json();
+            try {
+              switch (node.type) {
+                case 'trigger':
+                  if (node.data.type === 'manual') {
+                    outputData = { trigger: 'manual', timestamp: new Date().toISOString() };
+                    addLog("Manual trigger fired.");
                   }
-                } else if (config.operation === 'write' || config.operation === 'append') {
-                  // Get input data from connected nodes
-                  const inputData = get().getConnectedInputData(sheetsNode.id);
-                  
-                  if (Object.keys(inputData).length > 0) {
-                    // Prepare data for writing
-                    const values = [];
-                    
-                    // Convert input data to sheet format
-                    Object.values(inputData).forEach(data => {
-                      if (data && typeof data === 'object') {
-                        if (Array.isArray(data)) {
-                          values.push(...data);
-                        } else if (data.values) {
-                          values.push(...data.values);
-                        } else {
-                          // Convert object to array
-                          values.push(Object.values(data));
-                        }
-                      }
-                    });
-
+                  break;
+                
+                case 'googleSheets':
+                  const config = node.data;
+                  const token = localStorage.getItem('google_access_token');
+                  if (config.operation === 'read' && token) {
+                    addLog(`Reading from Google Sheet: ${config.selectedSheet}`);
                     const response = await fetch('http://localhost:3001/api/google-sheets', {
                       method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                      },
+                      headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
-                        operation: config.operation,
+                        operation: 'read',
                         spreadsheetId: config.selectedSpreadsheet,
                         sheetName: config.selectedSheet,
                         range: config.range,
-                        data: values,
-                        accessToken: token
-                      })
+                        accessToken: token,
+                      }),
                     });
-
                     if (response.ok) {
-                      result = await response.json();
+                      outputData = await response.json();
+                      addLog("Successfully read data from Google Sheet.");
+                    } else {
+                      addLog(`Failed to read from Google Sheet: ${response.statusText}`);
                     }
                   }
+                  break;
+
+                case 'logic':
+                  if (node.data.config?.type === 'transform' && node.data.config?.script) {
+                    addLog("Executing JavaScript logic...");
+                    const result = await executeLogic(node.data.config.script, inputData);
+                    outputData = result; // The script is expected to return the data
+                    addLog(`JavaScript execution completed. Output: ${JSON.stringify(result)}`);
+                  }
+                  break;
+
+                case 'ai':
+                  const aiConfig = node.data.config;
+                  if (aiConfig?.providerAddress && aiConfig?.prompt) {
+                    addLog("Sending data to AI node for inference...");
+                    const prompt = Object.values(inputData).reduce(
+                      (p, data) => p.replace(/\{\{.*\}\}/, JSON.stringify(data)),
+                      aiConfig.prompt
+                    );
+
+                    outputData = await apiInference(
+                      aiConfig.providerAddress,
+                      prompt,
+                      '0x0000000000000000000000000000000000000000'
+                    );
+                    addLog("AI inference successful.");
+                  }
+                  break;
+              }
+
+              if (outputData) {
+                setNodeData(node.id, outputData); // For display on node
+                setNodeRuntimeData(node.id, outputData); // For passing to next nodes
+              }
+              executedNodes.add(node.id);
+
+              const outgoingEdges = edges.filter((e) => e.source === currentNodeId);
+              outgoingEdges.forEach((edge) => {
+                if (!executedNodes.has(edge.target)) {
+                  executionQueue.push(edge.target);
                 }
+              });
 
-                if (result) {
-                  console.log(`✅ Google Sheets node ${sheetsNode.id} completed:`, result);
-                  
-                  // Store node output data
-                  setNodeData(sheetsNode.id, result);
-                  
-                  // Update node with result
-                  setNodes(nodes.map((node) =>
-                    node.id === sheetsNode.id
-                      ? { 
-                          ...node, 
-                          data: { 
-                            ...node.data, 
-                            result: result,
-                            lastExecuted: new Date().toISOString()
-                          } 
-                        }
-                      : node
-                  ));
-                }
-              } catch (error) {
-                console.error(`❌ Error processing Google Sheets node ${sheetsNode.id}:`, error);
-              }
+            } catch (error) {
+              addLog(`Error executing node ${node.id}: ${error.message}`);
+              console.error(`Error executing node ${node.id}:`, error);
+              setIsRunning(false);
+              return; // Stop execution on error
             }
-
-            // Process AI nodes
-            for (const aiNode of aiNodes) {
-              const config = aiNode.data.config;
-
-              if (!config?.providerAddress || !config?.prompt) {
-                console.warn(`⚠️ Skipping AI node ${aiNode.id}: Missing configuration`);
-                continue;
-              }
-
-              console.log(`🤖 Processing AI node: ${aiNode.data.label}`);
-
-              try {
-                const result = await apiInference(
-                  config.providerAddress,
-                  config.prompt,
-                  '0x0000000000000000000000000000000000000000'
-                );
-                console.log(`✅ AI node ${aiNode.id} completed:`, result);
-
-                // Update node with result
-                setNodes(nodes.map((node) =>
-                  node.id === aiNode.id
-                    ? {
-                        ...node,
-                        data: {
-                          ...node.data,
-                          result: result,
-                          lastExecuted: new Date().toISOString()
-                        }
-                      }
-                    : node
-                ));
-              } catch (error) {
-                console.error(`❌ Error processing AI node ${aiNode.id}:`, error);
-              }
-            }
-
-            console.log('✅ Workflow execution completed');
-          } catch (error) {
-            console.error('❌ Workflow execution failed:', error);
-            alert('Workflow execution failed');
-          } finally {
-            setIsRunning(false);
           }
+
+          setIsRunning(false);
+          addLog('Workflow execution finished.');
         },
 
         // Workflow persistence
         saveWorkflow: async () => {
-          const { nodes, edges } = get();
+          const { nodes, edges, addLog } = get();
+          addLog('Saving workflow to 0G Storage...');
           const workflow = {
             nodes,
             edges,
@@ -361,14 +433,17 @@ const useWorkflowStore = create(
             if (response.ok) {
               const result = await response.json();
               console.log('Workflow saved to 0G Storage:', result);
-              alert(`Workflow saved successfully!\nRoot hash: ${result.rootHash}\nTX: ${result.txHash}`);
+              addLog(`Workflow saved! Root Hash: ${result.rootHash}`);
+              alert(`Workflow saved successfully!\nRoot hash: ${result.rootHash}`);
             } else {
               const errorText = await response.text();
               console.error('Failed to save workflow:', response.statusText, errorText);
+              addLog(`Failed to save workflow: ${errorText}`);
               alert('Failed to save workflow to 0G Storage');
             }
           } catch (error) {
             console.error('Error saving workflow:', error);
+            addLog(`Error saving workflow: ${error.message}`);
             alert('Error saving workflow to 0G Storage');
           }
         },
@@ -437,45 +512,15 @@ const useWorkflowStore = create(
             alert('Error registering agent');
           }
         },
-
-        // Data flow state
-        nodeData: {}, // Store data output from each node
-        dataFlow: {}, // Store data flow between connected nodes
-
-        // Data flow actions
-        setNodeData: (nodeId, data) => set((state) => ({
-          nodeData: { ...state.nodeData, [nodeId]: data }
-        })),
-
-        getNodeData: (nodeId) => get().nodeData[nodeId],
-
-        // Get data from connected input nodes
-        getConnectedInputData: (nodeId) => {
-          const { edges, nodeData } = get();
-          const inputEdges = edges.filter(edge => edge.target === nodeId);
-          const inputData = {};
-
-          inputEdges.forEach(edge => {
-            const sourceData = nodeData[edge.source];
-            if (sourceData) {
-              inputData[edge.source] = sourceData;
-            }
-          });
-
-          return inputData;
-        },
       }),
       {
         name: 'workflow-storage',
         partialize: (state) => ({
           nodes: state.nodes,
-          edges: state.edges
-        })
+          edges: state.edges,
+        }),
       }
-    ),
-    {
-      name: 'workflow-store'
-    }
+    )
   )
 );
 

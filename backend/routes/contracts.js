@@ -98,7 +98,7 @@ router.post('/agents', requireContracts, async (req, res) => {
       subscriptionPrice: subscriptionPrice || 0
     });
     
-    res.json({
+    res.status(201).json({
       success: true,
       ...result
     });
@@ -164,33 +164,48 @@ router.post('/agents/:agentId/reviews', requireContracts, async (req, res) => {
 
 // Agent Rental Routes
 
-// Rent agent (pay-per-use)
-router.post('/agents/:agentId/rent', requireContracts, async (req, res) => {
+// Rent an agent (pay-per-use)
+router.post('/agents/:agentId/rent/pay-per-use', requireContracts, async (req, res) => {
   try {
     const { agentId } = req.params;
-    const { value } = req.body;
-    
-    if (!value || value <= 0) {
-      return res.status(400).json({
-        error: 'Invalid payment value',
-        details: 'Payment value must be greater than 0'
-      });
+    const { value } = req.body; // Value in ETH
+
+    if (!value) {
+      return res.status(400).json({ error: 'Value is required for pay-per-use rental' });
     }
-    
-    const result = await req.contractService.rentAgentPayPerUse(agentId, value);
-    
-    res.json({
-      success: true,
-      ...result,
+
+    const result = await req.contractService.rentAgentPayPerUse(
       agentId,
-      value
-    });
+      ethers.parseEther(value.toString())
+    );
+
+    res.json({ success: true, ...result });
   } catch (error) {
-    console.error('Error renting agent:', error);
-    res.status(500).json({
-      error: 'Failed to rent agent',
-      details: error.message
-    });
+    console.error('Error renting agent (pay-per-use):', error);
+    res.status(500).json({ error: 'Failed to rent agent', details: error.message });
+  }
+});
+
+// Rent an agent (subscription)
+router.post('/agents/:agentId/rent/subscription', requireContracts, async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { duration, value } = req.body; // Duration in seconds, value in ETH
+
+    if (!duration || !value) {
+      return res.status(400).json({ error: 'Duration and value are required for subscription rental' });
+    }
+
+    const result = await req.contractService.rentAgentSubscription(
+      agentId,
+      duration,
+      ethers.parseEther(value.toString())
+    );
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('Error renting agent (subscription):', error);
+    res.status(500).json({ error: 'Failed to rent agent', details: error.message });
   }
 });
 

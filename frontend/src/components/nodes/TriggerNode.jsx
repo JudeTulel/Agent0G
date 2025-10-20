@@ -2,9 +2,19 @@ import { memo } from 'react'
 import { Handle, Position } from 'reactflow'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Zap, Clock, Webhook } from 'lucide-react'
+import { Zap, Clock, Webhook, Play } from 'lucide-react'
+import useWorkflowStore from '../../stores/workflowStore'
+import { Button } from '../ui/button'
 
-const TriggerNode = ({ data, selected }) => {
+const TriggerNode = ({ id, data, selected }) => {
+  const runWorkflow = useWorkflowStore((state) => state.runWorkflow)
+  const isRunning = useWorkflowStore((state) => state.isRunning)
+
+  const handleRunWorkflow = (e) => {
+    e.stopPropagation()
+    runWorkflow(id)
+  }
+
   const getIcon = (type) => {
     switch (type) {
       case 'webhook':
@@ -13,6 +23,8 @@ const TriggerNode = ({ data, selected }) => {
         return <Clock className="h-4 w-4" />
       case 'event':
         return <Zap className="h-4 w-4" />
+      case 'manual':
+        return <Play className="h-4 w-4" />
       default:
         return <Zap className="h-4 w-4" />
     }
@@ -26,6 +38,8 @@ const TriggerNode = ({ data, selected }) => {
         return 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300'
       case 'event':
         return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300'
+      case 'manual':
+        return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300'
       default:
         return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300'
     }
@@ -44,6 +58,17 @@ const TriggerNode = ({ data, selected }) => {
               {data.type}
             </Badge>
           </div>
+          {data.type === 'manual' && (
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={handleRunWorkflow}
+              disabled={isRunning}
+              className="h-8 w-8"
+            >
+              <Play className="h-5 w-5 text-green-500" />
+            </Button>
+          )}
         </div>
         
         {data.config && Object.keys(data.config).length > 0 && (

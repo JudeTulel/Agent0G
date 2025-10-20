@@ -99,6 +99,61 @@ class ContractService {
     }
   }
 
+  // Agent Rental Methods
+  async rentAgentPayPerUse(agentId, value) {
+    try {
+      const tx = await this.agentRental.rentAgentPayPerUse(agentId, { value });
+      const receipt = await tx.wait();
+
+      const event = receipt.logs.find(log => {
+        try {
+          const parsedLog = this.agentRental.interface.parseLog(log);
+          return parsedLog && parsedLog.name === 'AgentRented';
+        } catch {
+          return false;
+        }
+      });
+
+      const rentalId = event ? this.agentRental.interface.parseLog(event).args.rentalId : null;
+
+      return {
+        success: true,
+        rentalId: rentalId?.toString(),
+        txHash: tx.hash,
+      };
+    } catch (error) {
+      console.error('Error renting agent (pay-per-use):', error);
+      throw new Error(`Failed to rent agent for pay-per-use: ${error.message}`);
+    }
+  }
+
+  async rentAgentSubscription(agentId, duration, value) {
+    try {
+      const tx = await this.agentRental.rentAgentSubscription(agentId, duration, { value });
+      const receipt = await tx.wait();
+
+      const event = receipt.logs.find(log => {
+        try {
+          const parsedLog = this.agentRental.interface.parseLog(log);
+          return parsedLog && parsedLog.name === 'AgentRented';
+        } catch {
+          return false;
+        }
+      });
+      
+      const rentalId = event ? this.agentRental.interface.parseLog(event).args.rentalId : null;
+
+      return {
+        success: true,
+        rentalId: rentalId?.toString(),
+        txHash: tx.hash,
+      };
+    } catch (error) {
+      console.error('Error renting agent (subscription):', error);
+      throw new Error(`Failed to rent agent via subscription: ${error.message}`);
+    }
+  }
+
   async getAgent(agentId) {
     try {
       const agent = await this.agentRegistry.getAgent(agentId);
@@ -207,38 +262,6 @@ class ContractService {
     } catch (error) {
       console.error('Error getting agent reviews:', error);
       throw new Error(`Failed to get agent reviews: ${error.message}`);
-    }
-  }
-
-  // Agent Rental Methods
-  async rentAgentPayPerUse(agentId, value) {
-    try {
-      const tx = await this.agentRental.rentAgentPayPerUse(agentId, {
-        value: ethers.parseEther(value.toString())
-      });
-      
-      const receipt = await tx.wait();
-      
-      // Extract rental ID from events
-      const event = receipt.logs.find(log => {
-        try {
-          return this.agentRental.interface.parseLog(log).name === 'AgentRented';
-        } catch {
-          return false;
-        }
-      });
-      
-      const rentalId = event ? this.agentRental.interface.parseLog(event).args.rentalId : null;
-      
-      return {
-        success: true,
-        rentalId: rentalId?.toString(),
-        txHash: tx.hash,
-        blockNumber: receipt.blockNumber
-      };
-    } catch (error) {
-      console.error('Error renting agent:', error);
-      throw new Error(`Failed to rent agent: ${error.message}`);
     }
   }
 

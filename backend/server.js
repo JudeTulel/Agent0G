@@ -122,7 +122,7 @@ const initBroker = async () => {
     // Check wallet balance first
     const balance = await provider.getBalance(serviceWallet.address);
     console.log(`Service wallet balance: ${ethers.formatEther(balance)} 0G`);
-    
+
     if (balance === 0n) {
       throw new Error('Service wallet has zero balance. Please fund the wallet first.');
     }
@@ -184,8 +184,8 @@ const setupAccount = async () => {
             nonce: await getNextNonce()
           };
           try {
-            const depositWei = ethers.parseEther(neededOG.toFixed(18)); // Convert to wei
-            await broker.ledger.depositFund(depositWei, txOptions);
+            // const depositWei = ethers.parseEther(neededOG.toFixed(18)); // Convert to wei
+            await broker.ledger.depositFund(neededOG);
             console.log('✅ Deposit submitted, waiting briefly...');
             await sleep(5000);
           } catch (depositErr) {
@@ -202,12 +202,12 @@ const setupAccount = async () => {
         const feeData = await getFeeData();
         const txOptions = {
           gasPrice: feeData.gasPrice,
-            maxFeePerGas: feeData.maxFeePerGas,
-            maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+          maxFeePerGas: feeData.maxFeePerGas,
+          maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
           nonce: await getNextNonce()
         };
-        const initialFundingWei = ethers.parseEther(INITIAL_FUNDING_OG.toString());
-        await broker.ledger.addLedger(initialFundingWei, txOptions);
+
+        await broker.ledger.addLedger(INITIAL_FUNDING_OG);
         console.log('✅ New account created and funded, waiting briefly...');
         await sleep(5000);
       } catch (addLedgerErr) {
@@ -232,12 +232,12 @@ const performInference = async (providerAddress, query, fallbackFee = 0.01) => {
     console.log('Provider:', providerAddress, '(type:', typeof providerAddress, ')');
     console.log('Query length:', query?.length || 0);
     console.log('Fallback fee:', fallbackFee);
-    
+
     // Ensure broker is initialized
     if (!broker || !brokerInitialized) {
       throw new Error('Broker not initialized. Please wait for initialization to complete.');
     }
-    
+
     // Validate inputs
     if (!providerAddress || typeof providerAddress !== 'string') {
       throw new Error(`Invalid providerAddress: ${providerAddress} (type: ${typeof providerAddress})`);
@@ -245,7 +245,7 @@ const performInference = async (providerAddress, query, fallbackFee = 0.01) => {
     if (!query || typeof query !== 'string') {
       throw new Error(`Invalid query: ${query} (type: ${typeof query})`);
     }
-    
+
     // Validate and normalize addresses
     let provider;
     try {
@@ -257,7 +257,6 @@ const performInference = async (providerAddress, query, fallbackFee = 0.01) => {
 
     // Ensure account has funds
     const MIN_AVAILABLE_FOR_INFERENCE_OG = 0.005;
-    const minWei = ethers.parseEther(MIN_AVAILABLE_FOR_INFERENCE_OG.toString());
     try {
       let ledger = await broker.ledger.getLedger();
       let balance = BigInt(ledger.ledgerInfo?.[0] || ledger.balance || ledger.totalBalance || ledger[1] || 0);
@@ -378,15 +377,15 @@ const requireStorage = (req, res, next) => {
   next();
 };
 
-// --- API Endpoints (Aligned with Sample Structure) ---
+// --- API Endpoints ---
 
 // Health Check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    services: { 
-      compute: brokerInitialized, 
-      storage: storageInitialized 
+    services: {
+      compute: brokerInitialized,
+      storage: storageInitialized
     },
     serviceWallet: serviceWallet.address,
     timestamp: new Date().toISOString()
@@ -512,12 +511,12 @@ app.post('/api/account/refund', requireBroker, async (req, res) => {
   }
 });
 
-// AI Services (Aligned with sample)
-app.get('/api/services/list', requireBroker, async (req, res) => {
+
+app.get('/api/services', requireBroker, async (req, res) => {
   try {
     console.log('📋 Listing available compute services...');
     const services = await broker.inference.listService();
-    
+
     const formattedServices = services.map(service => ({
       provider: service.provider || service[0],
       model: service.model || service[6],
@@ -529,14 +528,14 @@ app.get('/api/services/list', requireBroker, async (req, res) => {
       isOfficial: ['0xf07240Efa67755B5311bc75784a061eDB47165Dd', '0x3feE5a4dd5FDb8a32dDA97Bed899830605dBD9D3'].includes(service.provider || service[0]),
       isVerifiable: true
     }));
-    
+
     res.json({ success: true, services: formattedServices });
   } catch (err) {
     console.error('❌ Error listing services:', err?.message || err);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to list services', 
-      details: String(err) 
+    res.status(500).json({
+      success: false,
+      error: 'Failed to list services',
+      details: String(err)
     });
   }
 });
@@ -571,12 +570,12 @@ app.post('/api/services/acknowledge-provider', requireBroker, async (req, res) =
 
 app.post('/api/services/query', requireBroker, async (req, res) => {
   const { providerAddress, query, fallbackFee = 0.01 } = req.body;
-  
+
   if (!providerAddress || !query) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: 'Missing required parameters', 
-      details: 'providerAddress and query are required.' 
+      error: 'Missing required parameters',
+      details: 'providerAddress and query are required.'
     });
   }
 
@@ -585,7 +584,7 @@ app.post('/api/services/query', requireBroker, async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('❌ Query failed:', err);
-    
+
     let statusCode = 500;
     if (String(err?.message || '').includes('Invalid address')) statusCode = 400;
     else if (String(err?.message || '').includes('Insufficient')) statusCode = 402;
@@ -600,21 +599,6 @@ app.post('/api/services/query', requireBroker, async (req, res) => {
   }
 });
 
-app.post('/api/services/settle-fee', requireBroker, async (req, res) => {
-  const { providerAddress, fee } = req.body;
-  if (!providerAddress || fee === undefined) {
-    return res.status(400).json({ success: false, error: 'providerAddress and fee required' });
-  }
-
-  try {
-    // Note: This is legacy; implement if needed based on broker API
-    console.log(`💰 Settling fee ${fee} for provider ${providerAddress}`);
-    // Placeholder: await broker.inference.settleFee(providerAddress, fee); // If method exists
-    res.json({ success: true, message: 'Fee settled' });
-  } catch (err) {
-    res.status(500).json({ success: false, error: 'Failed to settle fee', details: err.message });
-  }
-});
 
 // --- Storage Endpoints (Aligned with 0G Storage SDK) ---
 const storage = multer.diskStorage({
@@ -647,26 +631,41 @@ const upload = multer({
 
 // Upload file to 0G Storage
 app.post('/api/storage/upload', requireStorage, upload.single('file'), async (req, res) => {
+  let filePath = null;
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No file uploaded' });
     }
 
-    const filePath = req.file.path;
+    filePath = req.file.path;
     const fileName = req.file.filename;
+    const fileSize = req.file.size;
 
-    console.log(`📁 Uploading file to 0G Storage: ${fileName} (${req.file.size} bytes)`);
+    console.log(`📁 Uploading file to 0G Storage: ${fileName} (${fileSize} bytes)`);
 
-    const zgFileInstance = await ZgFile.fromFilePath(filePath);
+    // Create ZgFile instance from file path
+    let zgFileInstance;
+    try {
+      zgFileInstance = await ZgFile.fromFilePath(filePath);
+      console.log(`✓ ZgFile created from path: ${filePath}`);
+    } catch (createErr) {
+      throw new Error(`Failed to create ZgFile: ${createErr.message}`);
+    }
+    
+    // Generate merkle tree and get root hash
     const [tree, treeErr] = await zgFileInstance.merkleTree();
     if (treeErr) {
       throw new Error(`Failed to generate Merkle tree: ${treeErr.message}`);
     }
+    
     const rootHash = tree?.rootHash();
     if (!rootHash) {
       throw new Error('Failed to generate root hash');
     }
 
+    console.log(`✓ Root hash generated: ${rootHash}`);
+
+    // Get gas pricing
     const feeData = await getFeeData();
     const txOptions = {
       gasPrice: feeData.gasPrice,
@@ -674,33 +673,92 @@ app.post('/api/storage/upload', requireStorage, upload.single('file'), async (re
       maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
       nonce: await getNextNonce()
     };
-    const [tx, uploadErr] = await indexer.upload(zgFileInstance, RPC_URL, serviceWallet, txOptions);
-    if (uploadErr) {
-      throw new Error(`Upload failed: ${uploadErr.message}`);
+
+    console.log('🔄 Uploading to 0G Storage network...');
+
+    let uploadTx;
+    try {
+      // Use indexer.upload - returns [tx, uploadErr] tuple per documentation
+      const [tx, uploadErr] = await indexer.upload(zgFileInstance, RPC_URL, serviceWallet);
+      
+      if (uploadErr !== null) {
+        throw new Error(`Upload error: ${uploadErr}`);
+      }
+
+      // Handle tx object and extract hash
+      uploadTx = typeof tx === 'object' ? tx.hash || tx.transactionHash : tx;
+
+      if (!uploadTx) {
+        throw new Error('No transaction hash returned from upload');
+      }
+
+      console.log(`✓ Upload transaction hash: ${uploadTx}`);
+
+    } catch (uploadErr) {
+      console.error('❌ Upload error:', uploadErr);
+      throw uploadErr;
     }
 
-    console.log(`✅ File uploaded to 0G Storage with rootHash: ${rootHash}, tx: ${tx}`);
+    // Close the file when done
+    try {
+      await zgFileInstance.close();
+      console.log('✓ File closed');
+    } catch (closeErr) {
+      console.log('⚠️ Close warning:', closeErr.message);
+    }
 
-    await fs.unlink(filePath);
+    // Clean up temp file
+    try {
+      await fs.unlink(filePath);
+      console.log('✓ Temp file cleaned up');
+    } catch (cleanupErr) {
+      console.log('⚠️ Cleanup warning:', cleanupErr.message);
+    }
+
+    console.log(`✅ File successfully uploaded to 0G Storage`);
 
     res.json({
       success: true,
       file: {
         name: fileName,
         originalName: req.file.originalname,
-        size: req.file.size,
+        size: fileSize,
         rootHash,
-        transactionHash: tx,
+        rootHashFormatted: rootHash.startsWith('0x') ? rootHash : `0x${rootHash}`,
+        transactionHash: uploadTx,
         uploadedAt: new Date().toISOString()
+      },
+      // Add metadata for frontend modal
+      modal: {
+        title: 'File Upload Successful',
+        message: 'Your file has been successfully uploaded to 0G Storage.',
+        details: [
+          {
+            label: 'Root Hash',
+            value: rootHash.startsWith('0x') ? rootHash : `0x${rootHash}`,
+            copyable: true
+          },
+          {
+            label: 'Transaction Hash',
+            value: uploadTx,
+            copyable: true
+          }
+        ]
       }
     });
+
   } catch (err) {
-    console.error('❌ File upload failed:', err);
-    try {
-      if (req.file?.path) await fs.unlink(req.file.path);
-    } catch (cleanupErr) {
-      console.error('⚠️ Cleanup failed:', cleanupErr);
+    console.error('❌ File upload failed:', err.message);
+    
+    // Cleanup on error
+    if (filePath) {
+      try {
+        await fs.unlink(filePath);
+      } catch (cleanupErr) {
+        console.error('⚠️ Cleanup failed:', cleanupErr);
+      }
     }
+
     res.status(500).json({
       success: false,
       error: 'File upload failed',
@@ -719,24 +777,30 @@ app.get('/api/storage/download/:rootHash', requireStorage, async (req, res) => {
 
     console.log(`📥 Downloading file from 0G Storage: ${rootHash}`);
 
-    // Temporary output path
     const outputPath = path.join(__dirname, 'temp-uploads', `download-${rootHash}-${Date.now()}`);
+
+    // Download using zgFile
+    const downloadErr = await zgFile.downloadByRoot(rootHash, outputPath);
     
-    // Download using indexer
-    const err = await indexer.download(rootHash, outputPath, true); // verify=true
-    if (err) {
-      throw new Error(`Download failed: ${err.message}`);
+    if (downloadErr) {
+      throw new Error(`Download failed: ${downloadErr.message}`);
     }
 
-    // Stream file to client
-    const fileBuffer = await fs.readFile(outputPath);
+    // Verify file integrity
+    const downloadedFileData = await fs.readFile(outputPath);
+    const verifyZgFile = new ZgFile(1024, downloadedFileData);
+    const [verifyTree, verifyErr] = await verifyZgFile.merkleTree();
     
+    if (verifyErr || verifyTree?.rootHash() !== rootHash) {
+      throw new Error('Downloaded file verification failed');
+    }
+
     res.set({
       'Content-Type': 'application/octet-stream',
       'Content-Disposition': `attachment; filename="downloaded-${rootHash}"`,
-      'Content-Length': fileBuffer.length
+      'Content-Length': downloadedFileData.length
     });
-    res.send(fileBuffer);
+    res.send(downloadedFileData);
 
     // Clean up
     await fs.unlink(outputPath);
@@ -779,10 +843,10 @@ app.get('/api/storage/files', requireStorage, async (req, res) => {
     res.json({ success: true, files });
   } catch (err) {
     console.error('❌ Failed to list files:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to list files', 
-      details: err.message 
+    res.status(500).json({
+      success: false,
+      error: 'Failed to list files',
+      details: err.message
     });
   }
 });
@@ -815,18 +879,18 @@ app.get('/api/storage/kv/get/:key', requireStorage, async (req, res) => {
 // Error handling
 app.use((err, req, res, next) => {
   console.error('❌ Unhandled error:', err);
-  res.status(500).json({ 
+  res.status(500).json({
     success: false,
-    error: 'Internal server error', 
+    error: 'Internal server error',
     details: err.message,
     timestamp: new Date().toISOString()
   });
 });
 
 app.use('*', (req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     success: false,
-    error: 'Endpoint not found', 
+    error: 'Endpoint not found',
     path: req.originalUrl,
     method: req.method
   });

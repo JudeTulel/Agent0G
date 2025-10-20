@@ -28,6 +28,7 @@ import ActionNode from './nodes/ActionNode'
 import AINode from './nodes/AINode'
 import LogicNode from './nodes/LogicNode'
 import WorkflowSetupModal from './WorkflowSetupModal'
+import WorkflowHashModal from './WorkflowHashModal'
 
 import useWorkflowStore from '../stores/workflowStore'
 import { CONTRACT_ADDRESSES, AGENT_REGISTRY_ABI } from '../lib/blockchain'
@@ -148,6 +149,10 @@ const WorkflowBuilder = () => {
   const [selectedEdge, setSelectedEdge] = useState(null)
   const [dataFlow, setDataFlow] = useState(null)
   const [dataFormat, setDataFormat] = useState('json')
+
+  // Modal for workflow hash
+  const [showHashModal, setShowHashModal] = useState(false)
+  const [savedRootHash, setSavedRootHash] = useState("")
 
   // Function to fetch spreadsheets
   const fetchSpreadsheets = async () => {
@@ -275,7 +280,7 @@ const WorkflowBuilder = () => {
   const closePropertiesSidebar = useCallback(() => {
     setShowPropertiesSidebar(false)
     setSelectedNode(null)
-  }, [])
+  }, [setShowPropertiesSidebar, setSelectedNode])
 
   // Handle creating workflow from template
   const handleCreateWorkflow = useCallback((workflowData) => {
@@ -296,18 +301,31 @@ const WorkflowBuilder = () => {
 
   // Node Properties Sidebar Component
   const NodePropertiesSidebar = ({ node, onClose }) => {
-    if (!node) return null
-
-    const handlePropertyChange = (property, value) => {
-      const newData = { ...node.data }
-      if (property.includes('.')) {
-        const [parent, child] = property.split('.')
-        newData[parent] = { ...newData[parent], [child]: value }
-      } else {
-        newData[property] = value
+    const [localNodeData, setLocalNodeData] = useState(node ? { ...node.data } : {});
+  
+    useEffect(() => {
+      if (node) {
+        setLocalNodeData({ ...node.data });
       }
-      updateNodeData(node.id, newData)
-    }
+    }, [node]);
+  
+    if (!node) return null;
+  
+    const handlePropertyChange = (property, value) => {
+      const newData = { ...localNodeData };
+      if (property.includes('.')) {
+        const [parent, child] = property.split('.');
+        newData[parent] = { ...newData[parent], [child]: value };
+      } else {
+        newData[property] = value;
+      }
+      setLocalNodeData(newData);
+    };
+  
+    const handleClose = () => {
+      updateNodeData(node.id, localNodeData);
+      onClose();
+    };
 
     const renderNodeProperties = () => {
       switch (node.type) {
@@ -318,7 +336,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="trigger-label">Label</Label>
                 <Input
                   id="trigger-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter trigger label"
                 />
@@ -327,7 +345,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="trigger-url">Webhook URL</Label>
                 <Input
                   id="trigger-url"
-                  value={node.data.config?.url || ''}
+                  value={localNodeData.config?.url || ''}
                   onChange={(e) => handlePropertyChange('config.url', e.target.value)}
                   placeholder="https://api.example.com/webhook"
                 />
@@ -335,7 +353,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="trigger-method">HTTP Method</Label>
                 <Select
-                  value={node.data.config?.method || 'POST'}
+                  value={localNodeData.config?.method || 'POST'}
                   onValueChange={(value) => handlePropertyChange('config.method', value)}
                 >
                   <SelectTrigger>
@@ -359,7 +377,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="ai-label">Label</Label>
                 <Input
                   id="ai-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter AI node label"
                 />
@@ -367,7 +385,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="ai-provider">Provider</Label>
                 <Select
-                  value={node.data.config?.providerAddress || ''}
+                  value={localNodeData.config?.providerAddress || ''}
                   onValueChange={(value) => {
                     handlePropertyChange('config.providerAddress', value);
                   }}
@@ -378,7 +396,7 @@ const WorkflowBuilder = () => {
                   </SelectTrigger>
                   <SelectContent>
                     {availableServices.map((service) => (
-                      <SelectItem key={service.providerAddress} value={service.providerAddress}>
+                      <SelectItem key={service.provider} value={service.provider}>
                         {service.provider}
                       </SelectItem>
                     ))}
@@ -404,14 +422,14 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="ai-prompt">Prompt</Label>
                 <Textarea
                   id="ai-prompt"
-                  value={node.data.config?.prompt || ''}
+                  value={localNodeData.config?.prompt || ''}
                   onChange={(e) => handlePropertyChange('config.prompt', e.target.value)}
                   placeholder="Enter your AI prompt here..."
                   rows={6}
                   className="font-mono text-sm"
                 />
               </div>
-              {node.data.result && (
+              {localNodeData.result && (
                 <>
                   <Separator />
                   <div>
@@ -419,11 +437,11 @@ const WorkflowBuilder = () => {
                     <div className="mt-2 p-3 bg-muted rounded-md text-sm">
                       <div className="font-medium mb-1">Response:</div>
                       <div className="text-muted-foreground">
-                        {node.data.result.answer || 'No response'}
+                        {localNodeData.result.answer || 'No response'}
                       </div>
-                      {node.data.lastExecuted && (
+                      {localNodeData.lastExecuted && (
                         <div className="text-xs text-muted-foreground mt-2">
-                          Executed: {new Date(node.data.lastExecuted).toLocaleString()}
+                          Executed: {new Date(localNodeData.lastExecuted).toLocaleString()}
                         </div>
                       )}
                     </div>
@@ -440,7 +458,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="action-label">Label</Label>
                 <Input
                   id="action-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter action label"
                 />
@@ -448,7 +466,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="action-type">Action Type</Label>
                 <Select
-                  value={node.data.config?.type || ''}
+                  value={localNodeData.config?.type || ''}
                   onValueChange={(value) => handlePropertyChange('config.type', value)}
                 >
                   <SelectTrigger>
@@ -462,13 +480,13 @@ const WorkflowBuilder = () => {
                   </SelectContent>
                 </Select>
               </div>
-              {node.data.config?.type === 'http' && (
+              {localNodeData.config?.type === 'http' && (
                 <>
                   <div>
                     <Label htmlFor="http-url">URL</Label>
                     <Input
                       id="http-url"
-                      value={node.data.config?.url || ''}
+                      value={localNodeData.config?.url || ''}
                       onChange={(e) => handlePropertyChange('config.url', e.target.value)}
                       placeholder="https://api.example.com"
                     />
@@ -476,7 +494,7 @@ const WorkflowBuilder = () => {
                   <div>
                     <Label htmlFor="http-method">Method</Label>
                     <Select
-                      value={node.data.config?.method || 'GET'}
+                      value={localNodeData.config?.method || 'GET'}
                       onValueChange={(value) => handlePropertyChange('config.method', value)}
                     >
                       <SelectTrigger>
@@ -494,7 +512,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="http-headers">Headers</Label>
                     <Textarea
                       id="http-headers"
-                      value={node.data.config?.headers ? JSON.stringify(node.data.config.headers, null, 2) : ''}
+                      value={localNodeData.config?.headers ? JSON.stringify(localNodeData.config.headers, null, 2) : ''}
                       onChange={(e) => {
                         try {
                           const headers = JSON.parse(e.target.value);
@@ -507,12 +525,12 @@ const WorkflowBuilder = () => {
                       rows={3}
                     />
                   </div>
-                  {(node.data.config?.method === 'POST' || node.data.config?.method === 'PUT') && (
+                  {(localNodeData.config?.method === 'POST' || localNodeData.config?.method === 'PUT') && (
                     <div>
                       <Label htmlFor="http-body">Request Body</Label>
                       <Textarea
                         id="http-body"
-                        value={node.data.config?.body || ''}
+                        value={localNodeData.config?.body || ''}
                         onChange={(e) => handlePropertyChange('config.body', e.target.value)}
                         placeholder="JSON or text body"
                         rows={4}
@@ -521,13 +539,13 @@ const WorkflowBuilder = () => {
                   )}
                 </>
               )}
-              {node.data.config?.type === 'email' && (
+              {localNodeData.config?.type === 'email' && (
                 <>
                   <div>
                     <Label htmlFor="email-to">To</Label>
                     <Input
                       id="email-to"
-                      value={node.data.config?.to || ''}
+                      value={localNodeData.config?.to || ''}
                       onChange={(e) => handlePropertyChange('config.to', e.target.value)}
                       placeholder="recipient@example.com"
                     />
@@ -536,7 +554,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="email-subject">Subject</Label>
                     <Input
                       id="email-subject"
-                      value={node.data.config?.subject || ''}
+                      value={localNodeData.config?.subject || ''}
                       onChange={(e) => handlePropertyChange('config.subject', e.target.value)}
                       placeholder="Email subject"
                     />
@@ -545,7 +563,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="email-body">Body</Label>
                     <Textarea
                       id="email-body"
-                      value={node.data.config?.body || ''}
+                      value={localNodeData.config?.body || ''}
                       onChange={(e) => handlePropertyChange('config.body', e.target.value)}
                       placeholder="Email body content"
                       rows={4}
@@ -554,7 +572,7 @@ const WorkflowBuilder = () => {
                   <div>
                     <Label htmlFor="email-template">Template</Label>
                     <Select
-                      value={node.data.config?.template || 'plain'}
+                      value={localNodeData.config?.template || 'plain'}
                       onValueChange={(value) => handlePropertyChange('config.template', value)}
                     >
                       <SelectTrigger>
@@ -569,12 +587,12 @@ const WorkflowBuilder = () => {
                   </div>
                 </>
               )}
-              {node.data.config?.type === 'database' && (
+              {localNodeData.config?.type === 'database' && (
                 <>
                   <div>
                     <Label htmlFor="db-operation">Operation</Label>
                     <Select
-                      value={node.data.config?.operation || 'select'}
+                      value={localNodeData.config?.operation || 'select'}
                       onValueChange={(value) => handlePropertyChange('config.operation', value)}
                     >
                       <SelectTrigger>
@@ -592,7 +610,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="db-query">Query</Label>
                     <Textarea
                       id="db-query"
-                      value={node.data.config?.query || ''}
+                      value={localNodeData.config?.query || ''}
                       onChange={(e) => handlePropertyChange('config.query', e.target.value)}
                       placeholder="SELECT * FROM table WHERE..."
                       rows={4}
@@ -603,19 +621,19 @@ const WorkflowBuilder = () => {
                     <Input
                       id="db-connection"
                       type="password"
-                      value={node.data.config?.connection || ''}
+                      value={localNodeData.config?.connection || ''}
                       onChange={(e) => handlePropertyChange('config.connection', e.target.value)}
                       placeholder="Database connection string"
                     />
                   </div>
                 </>
               )}
-              {node.data.config?.type === 'storage' && (
+              {localNodeData.config?.type === 'storage' && (
                 <>
                   <div>
                     <Label htmlFor="storage-operation">Operation</Label>
                     <Select
-                      value={node.data.config?.operation || 'upload'}
+                      value={localNodeData.config?.operation || 'upload'}
                       onValueChange={(value) => handlePropertyChange('config.operation', value)}
                     >
                       <SelectTrigger>
@@ -633,7 +651,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="storage-path">File Path</Label>
                     <Input
                       id="storage-path"
-                      value={node.data.config?.path || ''}
+                      value={localNodeData.config?.path || ''}
                       onChange={(e) => handlePropertyChange('config.path', e.target.value)}
                       placeholder="/path/to/file.txt"
                     />
@@ -642,7 +660,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="storage-bucket">Bucket/Container</Label>
                     <Input
                       id="storage-bucket"
-                      value={node.data.config?.bucket || ''}
+                      value={localNodeData.config?.bucket || ''}
                       onChange={(e) => handlePropertyChange('config.bucket', e.target.value)}
                       placeholder="my-bucket"
                     />
@@ -659,7 +677,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="logic-label">Label</Label>
                 <Input
                   id="logic-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter logic node label"
                 />
@@ -667,7 +685,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="logic-type">Logic Type</Label>
                 <Select
-                  value={node.data.config?.type || ''}
+                  value={localNodeData.config?.type || ''}
                   onValueChange={(value) => handlePropertyChange('config.type', value)}
                 >
                   <SelectTrigger>
@@ -681,12 +699,12 @@ const WorkflowBuilder = () => {
                   </SelectContent>
                 </Select>
               </div>
-              {node.data.config?.type === 'condition' && (
+              {localNodeData.config?.type === 'condition' && (
                 <div>
                   <Label htmlFor="condition-expression">Condition Expression</Label>
                   <Textarea
                     id="condition-expression"
-                    value={node.data.config?.expression || ''}
+                    value={localNodeData.config?.expression || ''}
                     onChange={(e) => handlePropertyChange('config.expression', e.target.value)}
                     placeholder="e.g., data.status === 'success'"
                     rows={3}
@@ -696,13 +714,13 @@ const WorkflowBuilder = () => {
                   </div>
                 </div>
               )}
-              {node.data.config?.type === 'loop' && (
+              {localNodeData.config?.type === 'loop' && (
                 <>
                   <div>
                     <Label htmlFor="loop-array">Array Expression</Label>
                     <Input
                       id="loop-array"
-                      value={node.data.config?.arrayExpression || ''}
+                      value={localNodeData.config?.arrayExpression || ''}
                       onChange={(e) => handlePropertyChange('config.arrayExpression', e.target.value)}
                       placeholder="data.items"
                     />
@@ -711,7 +729,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="loop-variable">Loop Variable</Label>
                     <Input
                       id="loop-variable"
-                      value={node.data.config?.loopVariable || 'item'}
+                      value={localNodeData.config?.loopVariable || 'item'}
                       onChange={(e) => handlePropertyChange('config.loopVariable', e.target.value)}
                       placeholder="item"
                     />
@@ -720,20 +738,20 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="loop-condition">Loop Condition (Optional)</Label>
                     <Input
                       id="loop-condition"
-                      value={node.data.config?.condition || ''}
+                      value={localNodeData.config?.condition || ''}
                       onChange={(e) => handlePropertyChange('config.condition', e.target.value)}
                       placeholder="item.active === true"
                     />
                   </div>
                 </>
               )}
-              {node.data.config?.type === 'variable' && (
+              {localNodeData.config?.type === 'variable' && (
                 <>
                   <div>
                     <Label htmlFor="variable-name">Variable Name</Label>
                     <Input
                       id="variable-name"
-                      value={node.data.config?.variableName || ''}
+                      value={localNodeData.config?.variableName || ''}
                       onChange={(e) => handlePropertyChange('config.variableName', e.target.value)}
                       placeholder="myVariable"
                     />
@@ -742,7 +760,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="variable-value">Variable Value</Label>
                     <Textarea
                       id="variable-value"
-                      value={node.data.config?.variableValue || ''}
+                      value={localNodeData.config?.variableValue || ''}
                       onChange={(e) => handlePropertyChange('config.variableValue', e.target.value)}
                       placeholder="data.result"
                       rows={3}
@@ -751,7 +769,7 @@ const WorkflowBuilder = () => {
                   <div>
                     <Label htmlFor="variable-scope">Scope</Label>
                     <Select
-                      value={node.data.config?.scope || 'workflow'}
+                      value={localNodeData.config?.scope || 'workflow'}
                       onValueChange={(value) => handlePropertyChange('config.scope', value)}
                     >
                       <SelectTrigger>
@@ -766,13 +784,13 @@ const WorkflowBuilder = () => {
                   </div>
                 </>
               )}
-              {node.data.config?.type === 'transform' && (
+              {localNodeData.config?.type === 'transform' && (
                 <>
                   <div>
                     <Label htmlFor="transform-input">Input Data</Label>
                     <Textarea
                       id="transform-input"
-                      value={node.data.config?.inputData || ''}
+                      value={localNodeData.config?.inputData || ''}
                       onChange={(e) => handlePropertyChange('config.inputData', e.target.value)}
                       placeholder="data"
                       rows={2}
@@ -782,7 +800,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="transform-code">Transform Code</Label>
                     <Textarea
                       id="transform-code"
-                      value={node.data.config?.transformCode || ''}
+                      value={localNodeData.config?.transformCode || ''}
                       onChange={(e) => handlePropertyChange('config.transformCode', e.target.value)}
                       placeholder="return data.map(item => ({ ...item, processed: true }))"
                       rows={4}
@@ -792,7 +810,7 @@ const WorkflowBuilder = () => {
                     <Label htmlFor="transform-output">Output Variable</Label>
                     <Input
                       id="transform-output"
-                      value={node.data.config?.outputVariable || 'transformedData'}
+                      value={localNodeData.config?.outputVariable || 'transformedData'}
                       onChange={(e) => handlePropertyChange('config.outputVariable', e.target.value)}
                       placeholder="transformedData"
                     />
@@ -809,7 +827,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="http-label">Label</Label>
                 <Input
                   id="http-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter HTTP request label"
                 />
@@ -818,7 +836,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="http-url">URL</Label>
                 <Input
                   id="http-url"
-                  value={node.data.config?.url || ''}
+                  value={localNodeData.config?.url || ''}
                   onChange={(e) => handlePropertyChange('config.url', e.target.value)}
                   placeholder="https://api.example.com"
                 />
@@ -826,7 +844,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="http-method">HTTP Method</Label>
                 <Select
-                  value={node.data.config?.method || 'GET'}
+                  value={localNodeData.config?.method || 'GET'}
                   onValueChange={(value) => handlePropertyChange('config.method', value)}
                 >
                   <SelectTrigger>
@@ -844,7 +862,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="http-body">Request Body</Label>
                 <Textarea
                   id="http-body"
-                  value={node.data.config?.body || ''}
+                  value={localNodeData.config?.body || ''}
                   onChange={(e) => handlePropertyChange('config.body', e.target.value)}
                   placeholder="JSON or text body"
                   rows={4}
@@ -862,7 +880,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="sheets-label">Label</Label>
                 <Input
                   id="sheets-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter Google Sheets label"
                 />
@@ -886,7 +904,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="sheets-spreadsheet">Spreadsheet</Label>
                 <Select
-                  value={node.data.selectedSpreadsheet || ''}
+                  value={localNodeData.selectedSpreadsheet || ''}
                   onValueChange={(value) => {
                     handlePropertyChange('selectedSpreadsheet', value)
                     // Optionally fetch sheet names here if needed
@@ -926,7 +944,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="sheets-spreadsheet-id">Spreadsheet ID (Manual)</Label>
                 <Input
                   id="sheets-spreadsheet-id"
-                  value={node.data.selectedSpreadsheet || ''}
+                  value={localNodeData.selectedSpreadsheet || ''}
                   onChange={(e) => handlePropertyChange('selectedSpreadsheet', e.target.value)}
                   placeholder="Enter spreadsheet ID"
                 />
@@ -936,7 +954,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="sheets-sheet">Sheet Name</Label>
                 <Input
                   id="sheets-sheet"
-                  value={node.data.selectedSheet || ''}
+                  value={localNodeData.selectedSheet || ''}
                   onChange={(e) => handlePropertyChange('selectedSheet', e.target.value)}
                   placeholder="Sheet1"
                 />
@@ -946,7 +964,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="sheets-range">Range</Label>
                 <Input
                   id="sheets-range"
-                  value={node.data.range || 'A1:Z100'}
+                  value={localNodeData.range || 'A1:Z100'}
                   onChange={(e) => handlePropertyChange('range', e.target.value)}
                   placeholder="A1:Z100"
                 />
@@ -955,7 +973,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="sheets-operation">Operation</Label>
                 <Select
-                  value={node.data.operation || 'read'}
+                  value={localNodeData.operation || 'read'}
                   onValueChange={(value) => handlePropertyChange('operation', value)}
                 >
                   <SelectTrigger>
@@ -969,26 +987,26 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.result && (
+              {localNodeData.result && (
                 <>
                   <Separator />
                   <div>
                     <Label>Last Execution Result</Label>
                     <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
-                      <div className="font-medium mb-1">Operation: {node.data.result.operation}</div>
-                      {node.data.result.values && (
+                      <div className="font-medium mb-1">Operation: {localNodeData.result.operation}</div>
+                      {localNodeData.result.values && (
                         <div className="text-muted-foreground">
-                          Rows: {node.data.result.values.length}
+                          Rows: {localNodeData.result.values.length}
                         </div>
                       )}
-                      {node.data.result.success !== undefined && (
+                      {localNodeData.result.success !== undefined && (
                         <div className="text-muted-foreground">
-                          Success: {node.data.result.success ? 'Yes' : 'No'}
+                          Success: {localNodeData.result.success ? 'Yes' : 'No'}
                         </div>
                       )}
-                      {node.data.lastExecuted && (
+                      {localNodeData.lastExecuted && (
                         <div className="text-xs text-muted-foreground mt-2">
-                          Executed: {new Date(node.data.lastExecuted).toLocaleString()}
+                          Executed: {new Date(localNodeData.lastExecuted).toLocaleString()}
                         </div>
                       )}
                     </div>
@@ -1005,7 +1023,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="llm-label">Label</Label>
                 <Input
                   id="llm-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter LLM node label"
                 />
@@ -1014,7 +1032,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="llm-model">AI Model</Label>
                 <Select
-                  value={node.data.config?.model || 'gpt-4'}
+                  value={localNodeData.config?.model || 'gpt-4'}
                   onValueChange={(value) => handlePropertyChange('config.model', value)}
                 >
                   <SelectTrigger>
@@ -1030,12 +1048,12 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.config?.model === 'custom' && (
+              {localNodeData.config?.model === 'custom' && (
                 <div>
                   <Label htmlFor="custom-model-endpoint">Custom Model Endpoint</Label>
                   <Input
                     id="custom-model-endpoint"
-                    value={node.data.config?.customEndpoint || ''}
+                    value={localNodeData.config?.customEndpoint || ''}
                     onChange={(e) => handlePropertyChange('config.customEndpoint', e.target.value)}
                     placeholder="https://api.custom-model.com/v1/chat"
                   />
@@ -1046,7 +1064,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="llm-prompt">Prompt Template</Label>
                 <Textarea
                   id="llm-prompt"
-                  value={node.data.config?.prompt || ''}
+                  value={localNodeData.config?.prompt || ''}
                   onChange={(e) => handlePropertyChange('config.prompt', e.target.value)}
                   placeholder="Enter your AI prompt here. Use {{variable}} for dynamic content."
                   rows={6}
@@ -1059,7 +1077,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="llm-temperature">Temperature</Label>
                 <Slider
-                  value={[node.data.config?.temperature || 0.7]}
+                  value={[localNodeData.config?.temperature || 0.7]}
                   onValueChange={(value) => handlePropertyChange('config.temperature', value[0])}
                   max={2}
                   min={0}
@@ -1076,7 +1094,7 @@ const WorkflowBuilder = () => {
                 <Input
                   id="llm-max-tokens"
                   type="number"
-                  value={node.data.config?.maxTokens || 1000}
+                  value={localNodeData.config?.maxTokens || 1000}
                   onChange={(e) => handlePropertyChange('config.maxTokens', parseInt(e.target.value))}
                   min={1}
                   max={4000}
@@ -1087,7 +1105,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="llm-system-message">System Message</Label>
                 <Textarea
                   id="llm-system-message"
-                  value={node.data.config?.systemMessage || ''}
+                  value={localNodeData.config?.systemMessage || ''}
                   onChange={(e) => handlePropertyChange('config.systemMessage', e.target.value)}
                   placeholder="You are a helpful assistant..."
                   rows={3}
@@ -1097,7 +1115,7 @@ const WorkflowBuilder = () => {
               <div className="flex items-center space-x-2">
                 <Checkbox
                   id="llm-stream"
-                  checked={node.data.config?.stream || false}
+                  checked={localNodeData.config?.stream || false}
                   onCheckedChange={(checked) => handlePropertyChange('config.stream', checked)}
                 />
                 <Label htmlFor="llm-stream">Stream Response</Label>
@@ -1106,7 +1124,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="llm-output-format">Output Format</Label>
                 <Select
-                  value={node.data.config?.outputFormat || 'text'}
+                  value={localNodeData.config?.outputFormat || 'text'}
                   onValueChange={(value) => handlePropertyChange('config.outputFormat', value)}
                 >
                   <SelectTrigger>
@@ -1121,19 +1139,19 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.result && (
+              {localNodeData.result && (
                 <>
                   <Separator />
                   <div>
                     <Label>Last Execution Result</Label>
                     <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
-                      <div className="font-medium mb-1">Model: {node.data.config?.model}</div>
+                      <div className="font-medium mb-1">Model: {localNodeData.config?.model}</div>
                       <div className="text-muted-foreground">
-                        {node.data.result.response || 'No response data'}
+                        {localNodeData.result.response || 'No response data'}
                       </div>
-                      {node.data.lastExecuted && (
+                      {localNodeData.lastExecuted && (
                         <div className="text-xs text-muted-foreground mt-2">
-                          Executed: {new Date(node.data.lastExecuted).toLocaleString()}
+                          Executed: {new Date(localNodeData.lastExecuted).toLocaleString()}
                         </div>
                       )}
                     </div>
@@ -1150,7 +1168,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="vision-label">Label</Label>
                 <Input
                   id="vision-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter vision node label"
                 />
@@ -1159,7 +1177,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="vision-model">Vision Model</Label>
                 <Select
-                  value={node.data.config?.model || 'gpt-4-vision'}
+                  value={localNodeData.config?.model || 'gpt-4-vision'}
                   onValueChange={(value) => handlePropertyChange('config.model', value)}
                 >
                   <SelectTrigger>
@@ -1173,12 +1191,12 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.config?.model === 'custom' && (
+              {localNodeData.config?.model === 'custom' && (
                 <div>
                   <Label htmlFor="custom-vision-endpoint">Custom Vision Endpoint</Label>
                   <Input
                     id="custom-vision-endpoint"
-                    value={node.data.config?.customEndpoint || ''}
+                    value={localNodeData.config?.customEndpoint || ''}
                     onChange={(e) => handlePropertyChange('config.customEndpoint', e.target.value)}
                     placeholder="https://api.custom-vision.com/v1/analyze"
                   />
@@ -1189,7 +1207,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="vision-prompt">Analysis Prompt</Label>
                 <Textarea
                   id="vision-prompt"
-                  value={node.data.config?.prompt || ''}
+                  value={localNodeData.config?.prompt || ''}
                   onChange={(e) => handlePropertyChange('config.prompt', e.target.value)}
                   placeholder="Describe what you want to analyze in the image..."
                   rows={4}
@@ -1199,7 +1217,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="vision-image-source">Image Source</Label>
                 <Select
-                  value={node.data.config?.imageSource || 'url'}
+                  value={localNodeData.config?.imageSource || 'url'}
                   onValueChange={(value) => handlePropertyChange('config.imageSource', value)}
                 >
                   <SelectTrigger>
@@ -1213,12 +1231,12 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.config?.imageSource === 'url' && (
+              {localNodeData.config?.imageSource === 'url' && (
                 <div>
                   <Label htmlFor="vision-image-url">Image URL</Label>
                   <Input
                     id="vision-image-url"
-                    value={node.data.config?.imageUrl || ''}
+                    value={localNodeData.config?.imageUrl || ''}
                     onChange={(e) => handlePropertyChange('config.imageUrl', e.target.value)}
                     placeholder="https://example.com/image.jpg"
                   />
@@ -1228,7 +1246,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="vision-output-format">Output Format</Label>
                 <Select
-                  value={node.data.config?.outputFormat || 'text'}
+                  value={localNodeData.config?.outputFormat || 'text'}
                   onValueChange={(value) => handlePropertyChange('config.outputFormat', value)}
                 >
                   <SelectTrigger>
@@ -1242,7 +1260,7 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.result && (
+              {localNodeData.result && (
                 <>
                   <Separator />
                   <div>
@@ -1250,11 +1268,11 @@ const WorkflowBuilder = () => {
                     <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
                       <div className="font-medium mb-1">Analysis Complete</div>
                       <div className="text-muted-foreground">
-                        {node.data.result.analysis || 'No analysis data'}
+                        {localNodeData.result.analysis || 'No analysis data'}
                       </div>
-                      {node.data.lastExecuted && (
+                      {localNodeData.lastExecuted && (
                         <div className="text-xs text-muted-foreground mt-2">
-                          Executed: {new Date(node.data.lastExecuted).toLocaleString()}
+                          Executed: {new Date(localNodeData.lastExecuted).toLocaleString()}
                         </div>
                       )}
                     </div>
@@ -1271,7 +1289,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="embedding-label">Label</Label>
                 <Input
                   id="embedding-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter embedding node label"
                 />
@@ -1280,7 +1298,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="embedding-model">Embedding Model</Label>
                 <Select
-                  value={node.data.config?.model || 'text-embedding-ada-002'}
+                  value={localNodeData.config?.model || 'text-embedding-ada-002'}
                   onValueChange={(value) => handlePropertyChange('config.model', value)}
                 >
                   <SelectTrigger>
@@ -1295,12 +1313,12 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.config?.model === 'custom' && (
+              {localNodeData.config?.model === 'custom' && (
                 <div>
                   <Label htmlFor="custom-embedding-endpoint">Custom Embedding Endpoint</Label>
                   <Input
                     id="custom-embedding-endpoint"
-                    value={node.data.config?.customEndpoint || ''}
+                    value={localNodeData.config?.customEndpoint || ''}
                     onChange={(e) => handlePropertyChange('config.customEndpoint', e.target.value)}
                     placeholder="https://api.custom-embedding.com/v1/embed"
                   />
@@ -1311,7 +1329,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="embedding-input">Input Text</Label>
                 <Textarea
                   id="embedding-input"
-                  value={node.data.config?.inputText || ''}
+                  value={localNodeData.config?.inputText || ''}
                   onChange={(e) => handlePropertyChange('config.inputText', e.target.value)}
                   placeholder="Text to convert to embeddings..."
                   rows={4}
@@ -1324,7 +1342,7 @@ const WorkflowBuilder = () => {
               <div>
                 <Label htmlFor="embedding-operation">Operation</Label>
                 <Select
-                  value={node.data.config?.operation || 'embed'}
+                  value={localNodeData.config?.operation || 'embed'}
                   onValueChange={(value) => handlePropertyChange('config.operation', value)}
                 >
                   <SelectTrigger>
@@ -1338,13 +1356,13 @@ const WorkflowBuilder = () => {
                 </Select>
               </div>
               
-              {node.data.config?.operation === 'similarity' && (
+              {localNodeData.config?.operation === 'similarity' && (
                 <>
                   <div>
                     <Label htmlFor="embedding-compare-text">Compare With Text</Label>
                     <Textarea
                       id="embedding-compare-text"
-                      value={node.data.config?.compareText || ''}
+                      value={localNodeData.config?.compareText || ''}
                       onChange={(e) => handlePropertyChange('config.compareText', e.target.value)}
                       placeholder="Text to compare similarity with..."
                       rows={3}
@@ -1353,7 +1371,7 @@ const WorkflowBuilder = () => {
                   <div>
                     <Label htmlFor="embedding-similarity-metric">Similarity Metric</Label>
                     <Select
-                      value={node.data.config?.similarityMetric || 'cosine'}
+                      value={localNodeData.config?.similarityMetric || 'cosine'}
                       onValueChange={(value) => handlePropertyChange('config.similarityMetric', value)}
                     >
                       <SelectTrigger>
@@ -1373,32 +1391,32 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="embedding-output-variable">Output Variable Name</Label>
                 <Input
                   id="embedding-output-variable"
-                  value={node.data.config?.outputVariable || 'embeddings'}
+                  value={localNodeData.config?.outputVariable || 'embeddings'}
                   onChange={(e) => handlePropertyChange('config.outputVariable', e.target.value)}
                   placeholder="embeddings"
                 />
               </div>
               
-              {node.data.result && (
+              {localNodeData.result && (
                 <>
                   <Separator />
                   <div>
                     <Label>Last Execution Result</Label>
                     <div className="mt-2 p-3 bg-muted rounded-md text-sm max-h-64 overflow-y-auto">
-                      <div className="font-medium mb-1">Operation: {node.data.config?.operation}</div>
-                      {node.data.result.dimensions && (
+                      <div className="font-medium mb-1">Operation: {localNodeData.config?.operation}</div>
+                      {localNodeData.result.dimensions && (
                         <div className="text-muted-foreground">
-                          Dimensions: {node.data.result.dimensions}
+                          Dimensions: {localNodeData.result.dimensions}
                         </div>
                       )}
-                      {node.data.result.similarity !== undefined && (
+                      {localNodeData.result.similarity !== undefined && (
                         <div className="text-muted-foreground">
-                          Similarity: {node.data.result.similarity.toFixed(4)}
+                          Similarity: {localNodeData.result.similarity.toFixed(4)}
                         </div>
                       )}
-                      {node.data.lastExecuted && (
+                      {localNodeData.lastExecuted && (
                         <div className="text-xs text-muted-foreground mt-2">
-                          Executed: {new Date(node.data.lastExecuted).toLocaleString()}
+                          Executed: {new Date(localNodeData.lastExecuted).toLocaleString()}
                         </div>
                       )}
                     </div>
@@ -1415,7 +1433,7 @@ const WorkflowBuilder = () => {
                 <Label htmlFor="default-label">Label</Label>
                 <Input
                   id="default-label"
-                  value={node.data.label || ''}
+                  value={localNodeData.label || ''}
                   onChange={(e) => handlePropertyChange('label', e.target.value)}
                   placeholder="Enter node label"
                 />
@@ -1430,7 +1448,7 @@ const WorkflowBuilder = () => {
         <div className="p-4 border-b bg-card/95 backdrop-blur sticky top-0 z-10 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-semibold">Node Properties</h3>
-            <Button variant="ghost" size="sm" onClick={onClose} className="hover:bg-destructive/10">
+            <Button variant="ghost" size="sm" onClick={handleClose} className="hover:bg-destructive/10">
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -1770,6 +1788,13 @@ const WorkflowBuilder = () => {
         onClose={() => setShowMintModal(false)}
         onMint={mintWorkflow}
       />
+
+      {/* Workflow Hash Modal */}
+      <WorkflowHashModal
+        isOpen={showHashModal}
+        onClose={() => setShowHashModal(false)}
+        rootHash={savedRootHash}
+      />
     </div>
   )
 }
@@ -1879,6 +1904,33 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
             </Button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// Workflow Hash Modal Component
+const WorkflowHashModal = ({ isOpen, onClose, rootHash }) => {
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-bold">Workflow Hash</h2>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        
+        <div className="space-y-4">
+          <div>
+            <Label className="block text-sm font-medium">Root Hash</Label>
+            <div className="mt-1 p-3 bg-muted rounded-md text-sm">
+              {rootHash}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

@@ -1,6 +1,8 @@
 import { createConfig, http } from 'wagmi'
 import { mainnet, sepolia } from 'wagmi/chains'
 import { injected, metaMask, walletConnect } from 'wagmi/connectors'
+import { allAgents } from '../data/mockData'
+import { ethers } from 'ethers'
 
 // 0G Chain configuration
 export const ogChain = {
@@ -13,7 +15,7 @@ export const ogChain = {
   },
   rpcUrls: {
     default: {
-      http: ['https://rpc-zero-gravity-mainnet.0g.ai'],
+      http: ['https://evmrpc.0g.ai'],
     },
   },
   blockExplorers: {
@@ -52,7 +54,7 @@ export const config = createConfig({
     injected(),
     metaMask(),
     walletConnect({
-      projectId: 'your-project-id', // Replace with actual WalletConnect project ID
+      projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID , 
     }),
   ],
   transports: {
@@ -76,6 +78,80 @@ export const CONTRACT_ADDRESSES = {
     UsageTracking: '0xeB47b31e69CA4fE4fe1A6fCf11Cb107F24F1302B',
   },
 }
+
+// API base URL
+const API_BASE_URL = 'http://localhost:3001/api';
+
+/**
+ * Fetches all agents from the backend.
+ * @param {object} filters - Optional filters (e.g., { category: 'DeFi', limit: 20 }).
+ * @returns {Promise<Array>} - A promise that resolves to an array of agents.
+ */
+export const fetchAgents = async (filters = {}) => {
+  try {
+    const query = new URLSearchParams(filters).toString();
+    const response = await fetch(`${API_BASE_URL}/contracts/agents?${query}`);
+    if (!response.ok) {
+      console.warn(`API fetch failed with status ${response.status}, falling back to mock data.`);
+      return allAgents; // Fallback on HTTP error
+    }
+    const data = await response.json();
+    const agents = (data.agents || []).map(agent => ({
+      ...agent,
+      id: agent.id.toString(),
+      pricePerUse: agent.pricePerUse ? parseFloat(ethers.formatEther(agent.pricePerUse)) : 0,
+      subscriptionPrice: agent.subscriptionPrice ? parseFloat(ethers.formatEther(agent.subscriptionPrice)) : 0,
+      rating: Number(agent.rating || 0),
+      reviewCount: Number(agent.reviewCount || 0),
+      totalUsage: Number(agent.totalUsage || 0),
+    }));
+
+    if (agents.length === 0) {
+      // fallback to mocks if backend returns empty
+      console.log("No agents returned from API, using mock data.");
+      return allAgents;
+    }
+
+    return agents;
+  } catch (error) {
+    console.error("Failed to fetch agents:", error);
+    // Return mock agents on any other error
+    return allAgents;
+  }
+};
+
+/**
+ * Fetches a single agent by its ID.
+ * @param {string|number} agentId - The ID of the agent to fetch.
+ * @returns {Promise<object|null>} - A promise that resolves to the agent object or null if not found.
+ */
+export const fetchAgentById = async (agentId) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/contracts/agents/${agentId}`);
+    if (!response.ok) {
+      if (response.status === 404) {
+        console.warn(`Agent ${agentId} not found in API, falling back to mock data.`);
+        return allAgents.find(agent => agent.id.toString() === agentId.toString()) || null;
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    const agent = data.agent;
+    return {
+      ...agent,
+      id: agent.id.toString(),
+      pricePerUse: parseFloat(ethers.formatEther(agent.pricePerUse || '0')),
+      subscriptionPrice: parseFloat(ethers.formatEther(agent.subscriptionPrice || '0')),
+      rating: Number(agent.rating),
+      reviewCount: Number(agent.reviewCount),
+      totalUsage: Number(agent.totalUsage),
+    };
+  } catch (error) {
+    console.error(`Failed to fetch agent ${agentId}:`, error);
+    return allAgents.find(agent => agent.id.toString() === agentId.toString()) || null;
+  }
+};
+
 
 // Contract ABIs 
 export const AGENT_REGISTRY_ABI = [
