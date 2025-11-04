@@ -29,6 +29,7 @@ import AINode from './nodes/AINode'
 import LogicNode from './nodes/LogicNode'
 import WorkflowSetupModal from './WorkflowSetupModal'
 import WorkflowHashModal from './WorkflowHashModal'
+import ExecutionTerminal from './ExecutionTerminal'
 
 import useWorkflowStore from '../stores/workflowStore'
 import { CONTRACT_ADDRESSES, AGENT_REGISTRY_ABI } from '../lib/blockchain'
@@ -196,50 +197,17 @@ const WorkflowBuilder = () => {
     }
   }
 
-  // Function to mint workflow as NFT
+  // Function to mint workflow as NFT using store-based approach
   const mintWorkflow = async (agentData) => {
-    if (!isConnected) {
-      alert('Please connect your wallet first')
-      return
-    }
-
-    if (!chainId || !CONTRACT_ADDRESSES[chainId]) {
-      alert('Unsupported network. Please switch to 0G chain.')
-      return
-    }
-
     try {
-      const contractAddress = CONTRACT_ADDRESSES[chainId].AgentRegistry
-      
-      // Convert price to wei (assuming ETH/OG)
-      const pricePerUseWei = BigInt(Math.floor(parseFloat(agentData.pricePerUse || '0') * 1e18))
-      const subscriptionPriceWei = BigInt(Math.floor(parseFloat(agentData.subscriptionPrice || '0') * 1e18))
-      
-      // Create a workflow hash from the current workflow data
-      const workflowData = JSON.stringify({ nodes, edges })
-      const workflowHash = btoa(workflowData) // Simple base64 encoding as hash
-      
-      await writeContract({
-        address: contractAddress,
-        abi: AGENT_REGISTRY_ABI,
-        functionName: 'registerAgent',
-        args: [
-          agentData.name || 'Untitled Workflow',
-          agentData.description || 'No description provided',
-          agentData.category || 'General',
-          workflowHash,
-          pricePerUseWei,
-          subscriptionPriceWei
-        ]
-      })
-
-      alert('Workflow minted successfully!')
-      setShowMintModal(false)
+      // Use the store's mint function which handles saving + contract registration
+      await useWorkflowStore.getState().mintWorkflow(agentData);
+      setShowMintModal(false);
     } catch (error) {
-      console.error('Error minting workflow:', error)
-      alert('Failed to mint workflow. Please try again.')
+      console.error('Error minting workflow:', error);
+      // Error handling is already done in the store
     }
-  }
+  };
 
   // Function to get data flow for an edge
   const getDataFlow = (edge) => {
@@ -294,6 +262,23 @@ const WorkflowBuilder = () => {
     // Clear the dismissed flag since user created a workflow
     localStorage.removeItem('workflow-modal-dismissed')
   }, [setNodes, setEdges])
+
+  // Save workflow and show hash modal
+  const handleSaveWorkflow = async () => {
+    try {
+      const hash = await saveWorkflow();
+      if (hash) {
+        setSavedRootHash(hash);
+        setShowHashModal(true);
+      } else {
+        // fallback: notify user
+        alert('Workflow saved but no root hash returned from server.');
+      }
+    } catch (err) {
+      console.error('Save workflow failed:', err);
+      alert('Failed to save workflow. See console for details.');
+    }
+  }
 
   const proOptions = {
     hideAttribution: true,
@@ -1626,7 +1611,7 @@ const WorkflowBuilder = () => {
             </Button>
             
             <div className="grid grid-cols-3 gap-2">
-              <Button variant="outline" size="sm" onClick={saveWorkflow}>
+              <Button variant="outline" size="sm" onClick={handleSaveWorkflow}>
                 <Save className="h-4 w-4 mr-1" />
                 Save
               </Button>
@@ -1795,6 +1780,9 @@ const WorkflowBuilder = () => {
         onClose={() => setShowHashModal(false)}
         rootHash={savedRootHash}
       />
+
+      {/* Execution Terminal */}
+      <ExecutionTerminal />
     </div>
   )
 }
@@ -1811,10 +1799,12 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
     subscriptionPrice: 0
   })
 
+  const isContractMinting = useWorkflowStore((state) => state.isContractMinting)
+
   const handleSubmit = (e) => {
     e.preventDefault()
     onMint(agentData)
-    onClose()
+    // Don't close immediately, let the minting process handle it
   }
 
   if (!isOpen) return null
@@ -1824,10 +1814,19 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
       <div className="bg-white rounded-lg p-6 w-full max-w-md">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-bold">Mint Agent</h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={isContractMinting}>
             <X className="h-4 w-4" />
           </Button>
         </div>
+        
+        {isContractMinting && (
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
+            <div className="flex items-center gap-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+              <span className="text-sm text-blue-700">Minting agent on blockchain...</span>
+            </div>
+          </div>
+        )}
         
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -1838,6 +1837,7 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
               onChange={(e) => setAgentData({...agentData, name: e.target.value})}
               placeholder="Enter agent name"
               required
+              disabled={isContractMinting}
             />
           </div>
           
@@ -1849,6 +1849,7 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
               onChange={(e) => setAgentData({...agentData, description: e.target.value})}
               placeholder="Describe what your agent does"
               required
+              disabled={isContractMinting}
             />
           </div>
           
@@ -1857,6 +1858,7 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
             <Select
               value={agentData.category}
               onValueChange={(value) => setAgentData({...agentData, category: value})}
+              disabled={isContractMinting}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -1872,7 +1874,7 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
           </div>
           
           <div>
-            <Label htmlFor="price-per-use">Price Per Use (ETH)</Label>
+            <Label htmlFor="price-per-use">Price Per Use (OG)</Label>
             <Input
               id="price-per-use"
               type="number"
@@ -1880,11 +1882,12 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
               value={agentData.pricePerUse}
               onChange={(e) => setAgentData({...agentData, pricePerUse: parseFloat(e.target.value) || 0})}
               placeholder="0.01"
+              disabled={isContractMinting}
             />
           </div>
           
           <div>
-            <Label htmlFor="subscription-price">Subscription Price (ETH/month)</Label>
+            <Label htmlFor="subscription-price">Subscription Price (OG/month)</Label>
             <Input
               id="subscription-price"
               type="number"
@@ -1892,45 +1895,36 @@ const MintModal = ({ isOpen, onClose, onMint }) => {
               value={agentData.subscriptionPrice}
               onChange={(e) => setAgentData({...agentData, subscriptionPrice: parseFloat(e.target.value) || 0})}
               placeholder="0.1"
+              disabled={isContractMinting}
             />
           </div>
           
           <div className="flex gap-2 pt-4">
-            <Button type="button" variant="outline" onClick={onClose} className="flex-1">
+            <Button 
+              type="button" 
+              variant="outline" 
+              onClick={onClose} 
+              className="flex-1"
+              disabled={isContractMinting}
+            >
               Cancel
             </Button>
-            <Button type="submit" className="flex-1">
-              Mint Agent
+            <Button 
+              type="submit" 
+              className="flex-1"
+              disabled={isContractMinting}
+            >
+              {isContractMinting ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Minting...
+                </>
+              ) : (
+                'Mint Agent'
+              )}
             </Button>
           </div>
         </form>
-      </div>
-    </div>
-  )
-}
-
-// Workflow Hash Modal Component
-const WorkflowHashModal = ({ isOpen, onClose, rootHash }) => {
-  if (!isOpen) return null
-
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-bold">Workflow Hash</h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-        
-        <div className="space-y-4">
-          <div>
-            <Label className="block text-sm font-medium">Root Hash</Label>
-            <div className="mt-1 p-3 bg-muted rounded-md text-sm">
-              {rootHash}
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   )

@@ -1,4 +1,13 @@
-export const API_BASE_URL = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) || 'http://localhost:3001';
+// Centralized API base URL configuration
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL|| 'http://localhost:3001';
+
+// Helper function to build API URLs consistently
+export const buildApiUrl = (endpoint) => {
+  const baseUrl = API_BASE_URL.replace(/\/$/, ''); // Remove trailing slash
+  const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return `${baseUrl}${path}`;
+  
+};
 
 // Backend endpoints map
 export const endpoints = {
@@ -15,7 +24,8 @@ export const endpoints = {
 };
 
 export async function apiRequest(path, method = 'GET', body, extraHeaders) {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const url = buildApiUrl(path);
+  const res = await fetch(url, {
     method,
     headers: {
       'Content-Type': 'application/json',

@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { ArrowLeft } from 'lucide-react'
 
+import { buildApiUrl } from '../lib/compute'
+
 const UseAgentPage = () => {
   const { agentId } = useParams()
   const navigate = useNavigate()
@@ -28,7 +30,7 @@ const UseAgentPage = () => {
     setLoading(true)
     try {
       // Fetch agent details
-      const agentResponse = await fetch(`http://localhost:3001/api/contracts/agents/${agentId}`)
+      const agentResponse = await fetch(buildApiUrl(`/api/contracts/agents/${agentId}`))
       if (agentResponse.ok) {
         const agentData = await agentResponse.json()
         setAgent(agentData.agent)

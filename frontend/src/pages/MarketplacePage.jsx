@@ -10,6 +10,8 @@ import AgentCard from '../components/AgentCard'
 import CategoryCard from '../components/CategoryCard'
 import { categories, featuredAgents, allAgents, userStats } from '../data/mockData'
 
+import { buildApiUrl } from '../lib/compute'
+
 const MarketplacePage = () => {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('all')
@@ -22,7 +24,7 @@ const MarketplacePage = () => {
   useEffect(() => {
     const fetchAgents = async () => {
       try {
-        const response = await fetch('http://localhost:3001/api/contracts/agents')
+        const response = await fetch(buildApiUrl('/api/contracts/agents'))
         if (response.ok) {
           const data = await response.json()
           // Transform API data to match component expectations
@@ -122,7 +124,7 @@ const MarketplacePage = () => {
 
   const handleAgentRent = async (agent) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/contracts/agents/${agent.id}/rent`, {
+      const response = await fetch(buildApiUrl(`/api/contracts/agents/${agent.id}/rent`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

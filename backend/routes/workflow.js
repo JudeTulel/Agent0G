@@ -280,7 +280,7 @@ router.post('/execute', async (req, res) => {
           throw new Error('Google access token required for Google Sheets operations');
         }
 
-        const sheetsResponse = await fetch('http://localhost:3001/api/google-sheets', {
+        const sheetsResponse = await fetch(`${import.meta.env.VITE_API_BASE}/api/google-sheets`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

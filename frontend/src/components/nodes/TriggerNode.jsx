@@ -9,10 +9,41 @@ import { Button } from '../ui/button'
 const TriggerNode = ({ id, data, selected }) => {
   const runWorkflow = useWorkflowStore((state) => state.runWorkflow)
   const isRunning = useWorkflowStore((state) => state.isRunning)
+  const executionState = useWorkflowStore((state) => state.nodeExecutionState[id])
 
   const handleRunWorkflow = (e) => {
     e.stopPropagation()
     runWorkflow(id)
+  }
+
+  const getExecutionStateIndicator = () => {
+    switch (executionState) {
+      case 'pending':
+        return <div className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 rounded-full animate-pulse" title="Pending execution" />
+      case 'running':
+        return <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full animate-spin border border-white" title="Running" />
+      case 'completed':
+        return <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full" title="Completed" />
+      case 'error':
+        return <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full" title="Error" />
+      default:
+        return null
+    }
+  }
+
+  const getNodeBorderClass = () => {
+    switch (executionState) {
+      case 'pending':
+        return 'border-yellow-300'
+      case 'running':
+        return 'border-blue-400 animate-pulse'
+      case 'completed':
+        return 'border-green-400'
+      case 'error':
+        return 'border-red-400'
+      default:
+        return 'border-yellow-200 dark:border-yellow-800'
+    }
   }
 
   const getIcon = (type) => {
@@ -46,8 +77,10 @@ const TriggerNode = ({ id, data, selected }) => {
   }
 
   return (
-    <Card className={`min-w-[200px] ${selected ? 'ring-2 ring-primary' : ''} shadow-lg border-yellow-200 dark:border-yellow-800`}>
-      <CardContent className="p-3">
+    <div className="relative">
+      {getExecutionStateIndicator()}
+      <Card className={`min-w-[200px] ${selected ? 'ring-2 ring-primary' : ''} shadow-lg ${getNodeBorderClass()}`}>
+        <CardContent className="p-3">
         <div className="flex items-center space-x-2 mb-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-yellow-400 to-orange-500 text-white">
             {getIcon(data.type)}
@@ -92,6 +125,7 @@ const TriggerNode = ({ id, data, selected }) => {
         className="w-3 h-3 bg-yellow-500 border-2 border-white"
       />
     </Card>
+    </div>
   )
 }
 

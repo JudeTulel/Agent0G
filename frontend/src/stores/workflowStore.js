@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
-import { getServices as apiGetServices, inference as apiInference } from '../lib/compute';
+import { getServices as apiGetServices, inference as apiInference, buildApiUrl } from '../lib/compute';
+import { registerAgent as contractRegisterAgent } from '../lib/agentRegistry';
 import { applyNodeChanges, applyEdgeChanges, addEdge } from 'reactflow';
 
 // Helper function to execute sandboxed JavaScript for logic nodes
@@ -39,6 +40,22 @@ const executeLogic = (code, inputData) => {
 
     worker.postMessage({ code, inputData });
   });
+};
+
+// Helper function to add timeout to async operations
+const withTimeout = (promise, timeoutMs, operation = 'Operation') => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${operation} timed out after ${timeoutMs}ms`)), timeoutMs)
+    )
+  ]);
+};
+
+// Helper function to format execution time
+const formatExecutionTime = (startTime) => {
+  const elapsed = Date.now() - startTime;
+  return elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(2)}s`;
 };
 
 
@@ -105,6 +122,9 @@ const useWorkflowStore = create(
         executionLogs: [],
         isLogPanelOpen: false,
         nodeRuntimeData: {},
+        nodeExecutionState: {}, // Track execution state per node: 'pending', 'running', 'completed', 'error'
+        lastWorkflowHash: null, // Store the most recent workflow hash from save operation
+        isContractMinting: false, // Track contract minting state
 
         // Actions
         setNodes: (nodes) => set({ nodes }),
@@ -152,6 +172,20 @@ const useWorkflowStore = create(
             [nodeId]: data,
           }
         })),
+        
+        // Node execution state management
+        setNodeExecutionState: (nodeId, state) => set(currentState => ({
+          nodeExecutionState: {
+            ...currentState.nodeExecutionState,
+            [nodeId]: state,
+          }
+        })),
+        
+        clearNodeExecutionStates: () => set({ nodeExecutionState: {} }),
+        
+        // Workflow hash management
+        setLastWorkflowHash: (hash) => set({ lastWorkflowHash: hash }),
+        setIsContractMinting: (minting) => set({ isContractMinting: minting }),
         
         // View control
         centerOnFirstNode: () => {
@@ -284,17 +318,49 @@ const useWorkflowStore = create(
             addLog,
             clearLogs,
             setIsLogPanelOpen,
-            setNodeRuntimeData
+            setNodeRuntimeData,
+            setNodeExecutionState,
+            clearNodeExecutionStates
           } = get();
           
+          // Default to first trigger node or first node if startNodeId is missing
+          if (!startNodeId) {
+            const triggerNode = nodes.find(n => n.type === 'trigger');
+            const firstNode = nodes[0];
+            startNodeId = triggerNode?.id || firstNode?.id;
+            
+            if (!startNodeId) {
+              addLog('❌ Error: No nodes found in workflow');
+              return;
+            }
+            
+            addLog(`🎯 Auto-selected start node: ${startNodeId} (${triggerNode ? 'trigger' : 'first available'})`);
+          }
+          
           clearLogs();
+          clearNodeExecutionStates();
           setIsLogPanelOpen(true);
-          addLog(`Workflow execution started from node ${startNodeId}.`);
+          
+          const workflowStartTime = Date.now();
+          addLog(`🚀 Workflow execution started from node ${startNodeId}`);
+          addLog(`📊 Total nodes: ${nodes.length}, Total edges: ${edges.length}`);
+          addLog(`⏱️  Execution started at ${new Date().toLocaleTimeString()}`);
+          
           setIsRunning(true);
           set({ nodeRuntimeData: {} });
 
           const executionQueue = [startNodeId];
           const executedNodes = new Set();
+          const nodeTimeouts = new Map(); // Track timeouts per node type
+
+          // Configure timeouts per node type (in milliseconds)
+          const TIMEOUTS = {
+            'ai': 30000,        // 30s for AI inference
+            'googleSheets': 15000, // 15s for Google Sheets operations
+            'httpRequest': 10000,  // 10s for HTTP requests
+            'logic': 5000,         // 5s for logic execution
+            'default': 8000        // 8s default timeout
+          };
 
           while (executionQueue.length > 0) {
             const currentNodeId = executionQueue.shift();
@@ -302,23 +368,34 @@ const useWorkflowStore = create(
 
             const node = nodes.find((n) => n.id === currentNodeId);
             if (!node) {
-              addLog(`Error: Node ${currentNodeId} not found.`);
+              addLog(`❌ Error: Node ${currentNodeId} not found`);
               continue;
             }
             
-            addLog(`Executing node: ${node.data.label || node.id} (Type: ${node.type})`);
-            executedNodes.add(currentNodeId);
-
+            const nodeStartTime = Date.now();
+            const nodeLabel = node.data.label || node.id;
+            const nodeType = node.type;
+            
+            setNodeExecutionState(currentNodeId, 'running');
+            addLog(`▶️  [${currentNodeId}] Starting execution: "${nodeLabel}" (type: ${nodeType})`);
+            
             const inputData = getConnectedInputData(node.id);
-            addLog(`Node ${node.id} received input: ${JSON.stringify(inputData)}`);
+            if (Object.keys(inputData).length > 0) {
+              addLog(`📥 [${currentNodeId}] Input data: ${JSON.stringify(inputData).substring(0, 100)}${JSON.stringify(inputData).length > 100 ? '...' : ''}`);
+            } else {
+              addLog(`📥 [${currentNodeId}] No input data`);
+            }
+            
             let outputData = null;
+            const timeout = TIMEOUTS[nodeType] || TIMEOUTS.default;
 
             try {
               switch (node.type) {
                 case 'trigger':
+                  addLog(`🔔 [${currentNodeId}] Executing trigger...`);
                   if (node.data.type === 'manual') {
                     outputData = { trigger: 'manual', timestamp: new Date().toISOString() };
-                    addLog("Manual trigger fired.");
+                    addLog(`✅ [${currentNodeId}] Manual trigger fired`);
                   }
                   break;
                 
@@ -326,83 +403,124 @@ const useWorkflowStore = create(
                   const config = node.data;
                   const token = localStorage.getItem('google_access_token');
                   if (config.operation === 'read' && token) {
-                    addLog(`Reading from Google Sheet: ${config.selectedSheet}`);
-                    const response = await fetch('http://localhost:3001/api/google-sheets', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        operation: 'read',
-                        spreadsheetId: config.selectedSpreadsheet,
-                        sheetName: config.selectedSheet,
-                        range: config.range,
-                        accessToken: token,
-                      }),
-                    });
+                    addLog(`📊 [${currentNodeId}] Reading from Google Sheet: ${config.selectedSheet}`);
+                    
+                    const spreadsheetId = config.selectedSpreadsheet;
+                    const range = config.range || 'A1:Z100';
+                    const sheetName = config.selectedSheet || 'Sheet1';
+                    
+                    const sheetsOperation = fetch(
+                      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}!${range}`,
+                      {
+                        headers: {
+                          'Authorization': `Bearer ${token}`,
+                          'Content-Type': 'application/json'
+                        }
+                      }
+                    );
+                    
+                    const response = await withTimeout(sheetsOperation, timeout, `Google Sheets read for node ${currentNodeId}`);
+                    
                     if (response.ok) {
-                      outputData = await response.json();
-                      addLog("Successfully read data from Google Sheet.");
+                      const data = await response.json();
+                      outputData = {
+                        operation: 'read',
+                        values: data.values || [],
+                        range: data.range,
+                        success: true
+                      };
+                      addLog(`✅ [${currentNodeId}] Successfully read ${outputData?.values?.length || 0} rows from Google Sheet`);
                     } else {
-                      addLog(`Failed to read from Google Sheet: ${response.statusText}`);
+                      const errorText = await response.text();
+                      addLog(`❌ [${currentNodeId}] Failed to read from Google Sheet: ${response.statusText} - ${errorText}`);
                     }
+                  } else {
+                    addLog(`⚠️  [${currentNodeId}] Google Sheets: Missing token or invalid operation`);
                   }
                   break;
 
                 case 'logic':
                   if (node.data.config?.type === 'transform' && node.data.config?.script) {
-                    addLog("Executing JavaScript logic...");
-                    const result = await executeLogic(node.data.config.script, inputData);
-                    outputData = result; // The script is expected to return the data
-                    addLog(`JavaScript execution completed. Output: ${JSON.stringify(result)}`);
+                    addLog(`🧠 [${currentNodeId}] Executing JavaScript logic...`);
+                    const logicOperation = executeLogic(node.data.config.script, inputData);
+                    const result = await withTimeout(logicOperation, timeout, `Logic execution for node ${currentNodeId}`);
+                    outputData = result;
+                    addLog(`✅ [${currentNodeId}] JavaScript execution completed, output type: ${typeof result}`);
                   }
                   break;
 
                 case 'ai':
                   const aiConfig = node.data.config;
                   if (aiConfig?.providerAddress && aiConfig?.prompt) {
-                    addLog("Sending data to AI node for inference...");
+                    addLog(`🤖 [${currentNodeId}] Starting AI inference with provider: ${aiConfig.providerAddress}`);
                     const prompt = Object.values(inputData).reduce(
                       (p, data) => p.replace(/\{\{.*\}\}/, JSON.stringify(data)),
                       aiConfig.prompt
                     );
+                    addLog(`📝 [${currentNodeId}] Prompt: ${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}`);
 
-                    outputData = await apiInference(
+                    const aiOperation = apiInference(
                       aiConfig.providerAddress,
                       prompt,
                       '0x0000000000000000000000000000000000000000'
                     );
-                    addLog("AI inference successful.");
+                    
+                    outputData = await withTimeout(aiOperation, timeout, `AI inference for node ${currentNodeId}`);
+                    addLog(`✅ [${currentNodeId}] AI inference completed successfully`);
+                  } else {
+                    addLog(`⚠️  [${currentNodeId}] AI node: Missing provider address or prompt`);
                   }
                   break;
+                  
+                default:
+                  addLog(`⚠️  [${currentNodeId}] Unknown node type: ${node.type}`);
               }
 
+              const executionTime = formatExecutionTime(nodeStartTime);
+              
               if (outputData) {
                 setNodeData(node.id, outputData); // For display on node
                 setNodeRuntimeData(node.id, outputData); // For passing to next nodes
+                addLog(`📤 [${currentNodeId}] Output generated (${executionTime}): ${JSON.stringify(outputData).substring(0, 100)}${JSON.stringify(outputData).length > 100 ? '...' : ''}`);
+              } else {
+                addLog(`📤 [${currentNodeId}] No output generated (${executionTime})`);
               }
+              
+              setNodeExecutionState(currentNodeId, 'completed');
               executedNodes.add(node.id);
 
               const outgoingEdges = edges.filter((e) => e.source === currentNodeId);
-              outgoingEdges.forEach((edge) => {
-                if (!executedNodes.has(edge.target)) {
-                  executionQueue.push(edge.target);
-                }
-              });
+              if (outgoingEdges.length > 0) {
+                addLog(`🔗 [${currentNodeId}] Queuing ${outgoingEdges.length} downstream node(s): ${outgoingEdges.map(e => e.target).join(', ')}`);
+                outgoingEdges.forEach((edge) => {
+                  if (!executedNodes.has(edge.target)) {
+                    executionQueue.push(edge.target);
+                    setNodeExecutionState(edge.target, 'pending');
+                  }
+                });
+              } else {
+                addLog(`🏁 [${currentNodeId}] No downstream nodes, execution path complete`);
+              }
 
             } catch (error) {
-              addLog(`Error executing node ${node.id}: ${error.message}`);
+              const executionTime = formatExecutionTime(nodeStartTime);
+              setNodeExecutionState(currentNodeId, 'error');
+              addLog(`❌ [${currentNodeId}] Error after ${executionTime}: ${error.message}`);
               console.error(`Error executing node ${node.id}:`, error);
               setIsRunning(false);
               return; // Stop execution on error
             }
           }
 
+          const totalExecutionTime = formatExecutionTime(workflowStartTime);
           setIsRunning(false);
-          addLog('Workflow execution finished.');
+          addLog(`🎉 Workflow execution finished successfully in ${totalExecutionTime}`);
+          addLog(`📈 Executed ${executedNodes.size} node(s) total`);
         },
 
         // Workflow persistence
         saveWorkflow: async () => {
-          const { nodes, edges, addLog } = get();
+          const { nodes, edges, addLog, setLastWorkflowHash } = get();
           addLog('Saving workflow to 0G Storage...');
           const workflow = {
             nodes,
@@ -425,7 +543,7 @@ const useWorkflowStore = create(
             const formData = new FormData();
             formData.append('file', workflowBlob, `workflow-${Date.now()}.json`);
 
-            const response = await fetch('http://localhost:3001/api/storage/upload', {
+            const response = await fetch(buildApiUrl('/api/storage/upload'), {
               method: 'POST',
               body: formData
             });
@@ -433,8 +551,14 @@ const useWorkflowStore = create(
             if (response.ok) {
               const result = await response.json();
               console.log('Workflow saved to 0G Storage:', result);
-              addLog(`Workflow saved! Root Hash: ${result.rootHash}`);
-              alert(`Workflow saved successfully!\nRoot hash: ${result.rootHash}`);
+              const rootHash = result.file?.rootHash || result.rootHash || result.rootHashFormatted;
+              
+              // Store the hash for minting
+              setLastWorkflowHash(rootHash);
+              
+              addLog(`Workflow saved! Root Hash: ${rootHash}`);
+              // Return the root hash so callers (UI) can show a modal
+              return rootHash;
             } else {
               const errorText = await response.text();
               console.error('Failed to save workflow:', response.statusText, errorText);
@@ -449,67 +573,88 @@ const useWorkflowStore = create(
         },
 
         mintWorkflow: async (agentData) => {
-          const { nodes, edges } = get();
-          const workflow = {
-            nodes,
-            edges,
-            metadata: {
+          const { nodes, edges, lastWorkflowHash, addLog, setIsContractMinting } = get();
+          
+          try {
+            setIsContractMinting(true);
+            addLog('🔄 Starting agent minting process...');
+
+            // Check if we have a recent workflow hash
+            let workflowHash = lastWorkflowHash;
+            
+            if (!workflowHash) {
+              addLog('📦 No recent workflow hash found, saving workflow first...');
+              
+              // Save workflow first to get hash
+              const workflow = {
+                nodes,
+                edges,
+                metadata: {
+                  name: agentData.name || 'My Workflow',
+                  description: agentData.description || 'AI agent workflow',
+                  version: '1.0.0',
+                  createdAt: new Date().toISOString()
+                }
+              };
+
+              const workflowBlob = new Blob([JSON.stringify(workflow, null, 2)], {
+                type: 'application/json'
+              });
+
+              const formData = new FormData();
+              formData.append('file', workflowBlob, `workflow-${Date.now()}.json`);
+
+              const storageResponse = await fetch(buildApiUrl('/api/storage/upload'), {
+                method: 'POST',
+                body: formData
+              });
+
+              if (!storageResponse.ok) {
+                throw new Error('Failed to save workflow to storage');
+              }
+
+              const storageResult = await storageResponse.json();
+              workflowHash = storageResult.file?.rootHash || storageResult.rootHash || storageResult.rootHashFormatted;
+              
+              if (!workflowHash) {
+                throw new Error('Failed to get workflow hash from storage');
+              }
+              
+              addLog(`✅ Workflow saved with hash: ${workflowHash}`);
+            } else {
+              addLog(`✅ Using existing workflow hash: ${workflowHash}`);
+            }
+
+            // Register agent on blockchain using the workflow hash
+            addLog('🔗 Registering agent on blockchain...');
+            
+            const contractData = {
               name: agentData.name,
               description: agentData.description,
-              version: '1.0.0',
-              createdAt: new Date().toISOString()
-            }
-          };
+              category: agentData.category,
+              workflowHash: workflowHash,
+              pricePerUse: agentData.pricePerUse || '0',
+              subscriptionPrice: agentData.subscriptionPrice || '0'
+            };
 
-          try {
-            // First save to storage to get the hash
-            const workflowBlob = new Blob([JSON.stringify(workflow, null, 2)], {
-              type: 'application/json'
-            });
+            const result = await contractRegisterAgent(contractData);
+            
+            addLog(`🎉 Agent registered successfully!`);
+            addLog(`📋 Agent ID: ${result.agentId}`);
+            addLog(`📄 Transaction: ${result.txHash}`);
+            
+            // Show success message to user
+            alert(`Agent registered successfully!\nAgent ID: ${result.agentId}\nTransaction Hash: ${result.txHash}`);
+            
+            return result;
 
-            const formData = new FormData();
-            formData.append('file', workflowBlob, `workflow-${Date.now()}.json`);
-
-            const storageResponse = await fetch('http://localhost:3001/api/storage/upload', {
-              method: 'POST',
-              body: formData
-            });
-
-            if (!storageResponse.ok) {
-              throw new Error('Failed to save workflow to storage');
-            }
-
-            const storageResult = await storageResponse.json();
-            const workflowHash = storageResult.rootHash;
-
-            // Now register the agent on the contract
-            const registerResponse = await fetch('http://localhost:3001/api/contracts/agents', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                name: agentData.name,
-                description: agentData.description,
-                category: agentData.category,
-                workflowHash: workflowHash,
-                pricePerUse: agentData.pricePerUse || 0,
-                subscriptionPrice: agentData.subscriptionPrice || 0
-              })
-            });
-
-            if (registerResponse.ok) {
-              const result = await registerResponse.json();
-              console.log('Agent registered:', result);
-              alert(`Agent registered successfully!\nAgent ID: ${result.agentId}\nTX: ${result.txHash}`);
-            } else {
-              const errorText = await registerResponse.text();
-              console.error('Failed to register agent:', registerResponse.statusText, errorText);
-              alert('Failed to register agent on contract');
-            }
           } catch (error) {
             console.error('Error minting workflow:', error);
-            alert('Error registering agent');
+            addLog(`❌ Minting failed: ${error.message}`);
+            alert(`Failed to mint agent: ${error.message}`);
+            throw error;
+          } finally {
+            setIsContractMinting(false);
           }
         },
       }),
